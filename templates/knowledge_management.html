@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>知识库管理 - Hologres</title>
+    <title>知识库管理 - Text2SQL</title>
     <style>
         * {
             margin: 0;
@@ -12,7 +12,7 @@
         }
         html, body {
             height: 100%;
-            font-family: 'Arial', sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Arial', sans-serif;
         }
         body {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -38,6 +38,12 @@
             color: #333;
             font-size: 28px;
         }
+        .header h1 span {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
         .btn-back {
             background: #667eea;
             color: white;
@@ -52,6 +58,40 @@
         .btn-back:hover {
             background: #5568d3;
             transform: translateY(-2px);
+        }
+        .database-bar {
+            background: white;
+            border-radius: 12px;
+            padding: 16px 24px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+        }
+        .database-bar label {
+            font-weight: 600;
+            color: #333;
+        }
+        .database-bar select {
+            padding: 10px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            min-width: 200px;
+            cursor: pointer;
+        }
+        .database-bar select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .db-info {
+            color: #666;
+            font-size: 13px;
+            background: #f0f0f0;
+            padding: 6px 12px;
+            border-radius: 20px;
         }
         .content {
             display: grid;
@@ -138,15 +178,6 @@
         }
         .btn-success:hover {
             background: #218838;
-        }
-        .btn-outline {
-            background: transparent;
-            border: 1px solid #667eea;
-            color: #667eea;
-        }
-        .btn-outline:hover {
-            background: #667eea;
-            color: white;
         }
         .table-container {
             overflow-x: auto;
@@ -235,7 +266,6 @@
             transform: translateY(-1px);
         }
 
-        /* 搜索栏样式 */
         .search-bar {
             margin-bottom: 20px;
             display: flex;
@@ -316,9 +346,9 @@
         .highlight {
             background-color: #fff3cd;
             border-radius: 2px;
+            padding: 0 2px;
         }
 
-        /* 抽屉式侧边栏样式 */
         .drawer-overlay {
             position: fixed;
             top: 0;
@@ -364,10 +394,6 @@
             display: flex;
             align-items: center;
             gap: 10px;
-        }
-        .drawer-header h2::before {
-            content: "✏️";
-            font-size: 24px;
         }
         .close-drawer {
             background: rgba(255, 255, 255, 0.2);
@@ -445,6 +471,23 @@
             color: #667eea;
             margin-bottom: 20px;
         }
+        .refresh-btn {
+            margin-bottom: 16px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #28a745;
+            padding: 10px 20px;
+            width: auto;
+        }
+        .refresh-btn:hover {
+            background: #218838;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px;
+            color: #999;
+        }
 
         @media (max-width: 768px) {
             .drawer {
@@ -472,37 +515,29 @@
             .search-stats {
                 text-align: center;
             }
-        }
-
-        .refresh-btn {
-            margin-bottom: 16px;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: #28a745;
-            padding: 10px 20px;
-            width: auto;
-        }
-        .refresh-btn:hover {
-            background: #218838;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px;
-            color: #999;
+            .database-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>📚 Hologres 知识库管理</h1>
+            <h1>📚 <span>知识库管理</span></h1>
             <button class="btn-back" onclick="goBack()">← 返回主页</button>
         </div>
 
+        <div class="database-bar">
+            <label>🗄️ 选择数据库：</label>
+            <select id="databaseSelect">
+                <option value="">正在加载...</option>
+            </select>
+            <div class="db-info" id="dbInfo">知识库条目: --</div>
+        </div>
+
         <div class="content">
-            <!-- 添加知识条目面板 -->
             <div class="panel">
                 <h2>➕ 添加新条目</h2>
                 <div id="addMessage"></div>
@@ -520,11 +555,9 @@
             </div>
         </div>
 
-        <!-- 知识库列表面板 -->
         <div class="panel">
             <h2>📋 知识库条目列表</h2>
             
-            <!-- 搜索和筛选栏 -->
             <div class="search-bar">
                 <div class="search-input-wrapper">
                     <span class="search-icon">🔍</span>
@@ -558,11 +591,10 @@
         </div>
     </div>
 
-    <!-- 抽屉式编辑侧边栏 -->
     <div class="drawer-overlay" id="drawerOverlay"></div>
     <div class="drawer" id="editDrawer">
         <div class="drawer-header">
-            <h2>编辑知识条目</h2>
+            <h2>✏️ 编辑知识条目</h2>
             <button class="close-drawer" id="closeDrawerBtn">×</button>
         </div>
         <div class="drawer-body">
@@ -585,30 +617,26 @@
 
     <script>
         let currentEditId = null;
-        let allKnowledgeData = [];      // 存储所有原始数据
-        let currentFilter = 'all';      // 当前筛选类型: all, question, sql
-        let currentSearchTerm = '';     // 当前搜索关键词
+        let allKnowledgeData = [];
+        let currentFilter = 'all';
+        let currentSearchTerm = '';
 
-        // 页面加载时获取知识库列表
         window.addEventListener('load', () => {
-            loadKnowledge();
+            loadDatabases();
             bindSearchEvents();
         });
 
-        // 绑定搜索相关事件
         function bindSearchEvents() {
             const searchInput = document.getElementById('searchInput');
             const clearBtn = document.getElementById('clearSearchBtn');
             const filterChips = document.querySelectorAll('.filter-chip');
 
-            // 搜索输入事件
             searchInput.addEventListener('input', (e) => {
                 currentSearchTerm = e.target.value.trim().toLowerCase();
                 updateClearButtonVisibility();
                 filterAndRenderTable();
             });
 
-            // 清空搜索按钮
             clearBtn.addEventListener('click', () => {
                 searchInput.value = '';
                 currentSearchTerm = '';
@@ -617,7 +645,6 @@
                 searchInput.focus();
             });
 
-            // 筛选类型切换
             filterChips.forEach(chip => {
                 chip.addEventListener('click', () => {
                     filterChips.forEach(c => c.classList.remove('active'));
@@ -628,14 +655,12 @@
             });
         }
 
-        // 更新清空按钮显示状态
         function updateClearButtonVisibility() {
             const clearBtn = document.getElementById('clearSearchBtn');
             const searchInput = document.getElementById('searchInput');
             clearBtn.style.display = searchInput.value.trim() ? 'flex' : 'none';
         }
 
-        // 高亮匹配文本
         function highlightText(text, searchTerm) {
             if (!searchTerm || !text) return escapeHtml(String(text));
             const escapedText = escapeHtml(String(text));
@@ -644,11 +669,10 @@
             return escapedText.replace(regex, '<span class="highlight">$1</span>');
         }
 
-        // 检查条目是否匹配搜索
         function matchesSearch(item, searchTerm, filterType) {
             if (!searchTerm) return true;
             
-            const question = (item['问题'] || '').toLowerCase();
+            const question = (item.question || '').toLowerCase();
             const sql = (item.sql || '').toLowerCase();
             
             if (filterType === 'question') {
@@ -660,10 +684,10 @@
             }
         }
 
-        // 筛选并渲染表格
         function filterAndRenderTable() {
             if (!allKnowledgeData || allKnowledgeData.length === 0) {
-                document.getElementById('searchStats').innerHTML = `共 <span id="totalCount">0</span> 条，显示 <span id="filteredCount">0</span> 条`;
+                document.getElementById('totalCount').innerText = '0';
+                document.getElementById('filteredCount').innerText = '0';
                 return;
             }
 
@@ -671,15 +695,12 @@
                 matchesSearch(item, currentSearchTerm, currentFilter)
             );
 
-            // 更新统计信息
             document.getElementById('totalCount').innerText = allKnowledgeData.length;
             document.getElementById('filteredCount').innerText = filtered.length;
             
-            // 渲染筛选后的数据
             renderTableData(filtered);
         }
 
-        // 渲染表格数据（带高亮）
         function renderTableData(data) {
             const knowledgeBody = document.getElementById('knowledgeBody');
             knowledgeBody.innerHTML = '';
@@ -694,17 +715,16 @@
             data.forEach(item => {
                 const row = document.createElement('tr');
                 
-                // 高亮问题文本
-                let highlightedQuestion = highlightText(item['问题'], currentSearchTerm);
+                let highlightedQuestion = highlightText(item.question, currentSearchTerm);
                 let highlightedSQL = highlightText(item.sql, currentSearchTerm);
                 
                 row.innerHTML = `
                     <td>${escapeHtml(String(item.id))}</td>
-                    <td class="question-cell" title="${escapeHtml(item['问题'])}">${highlightedQuestion}</td>
+                    <td class="question-cell" title="${escapeHtml(item.question)}">${highlightedQuestion}</td>
                     <td class="sql-cell" title="${escapeHtml(item.sql)}">${highlightedSQL}</td>
                     <td>
                         <div class="actions">
-                            <button class="edit-btn" data-id="${item.id}" data-question="${escapeAttrForAttr(item['问题'])}" data-sql="${escapeAttrForAttr(item.sql)}">✏️ 编辑</button>
+                            <button class="edit-btn" data-id="${item.id}" data-question="${escapeAttrForAttr(item.question)}" data-sql="${escapeAttrForAttr(item.sql)}">✏️ 编辑</button>
                             <button class="delete-btn" data-id="${item.id}">🗑️ 删除</button>
                         </div>
                     </td>
@@ -712,12 +732,10 @@
                 knowledgeBody.appendChild(row);
             });
 
-            // 重新绑定按钮事件
             knowledgeBody.removeEventListener('click', handleTableClick);
             knowledgeBody.addEventListener('click', handleTableClick);
         }
 
-        // 表格点击事件处理
         function handleTableClick(e) {
             const target = e.target;
             if (target.classList.contains('edit-btn')) {
@@ -731,7 +749,6 @@
             }
         }
 
-        // 抽屉元素
         const drawer = document.getElementById('editDrawer');
         const drawerOverlay = document.getElementById('drawerOverlay');
         const closeDrawerBtn = document.getElementById('closeDrawerBtn');
@@ -763,7 +780,65 @@
             window.location.href = '/';
         }
 
+        async function loadDatabases() {
+            try {
+                const response = await fetch('/get_databases');
+                const data = await response.json();
+                
+                if (response.ok && data.databases) {
+                    const select = document.getElementById('databaseSelect');
+                    
+                    select.innerHTML = '';
+                    data.databases.forEach(db => {
+                        const option = document.createElement('option');
+                        option.value = db.id;
+                        option.textContent = db.name;
+                        select.appendChild(option);
+                    });
+                    
+                    if (data.databases.length > 0) {
+                        select.value = data.databases[0].id;
+                    }
+                    
+                    select.addEventListener('change', () => {
+                        loadKnowledge();
+                        updateDbInfo();
+                    });
+                    
+                    await loadKnowledge();
+                }
+            } catch (error) {
+                console.error('加载数据库失败:', error);
+            }
+        }
+
+        async function updateDbInfo() {
+            const dbName = getSelectedDbName();
+            if (!dbName) return;
+            
+            try {
+                const response = await fetch(`/knowledge/api/status?db_name=${encodeURIComponent(dbName)}`);
+                const data = await response.json();
+                if (response.ok) {
+                    document.getElementById('dbInfo').innerHTML = `📊 知识库条目: ${data.row_count || 0}`;
+                }
+            } catch (error) {
+                console.error('获取状态失败:', error);
+            }
+        }
+
+        function getSelectedDbName() {
+            const select = document.getElementById('databaseSelect');
+            return select?.value || '';
+        }
+
         async function loadKnowledge() {
+            const dbName = getSelectedDbName();
+            if (!dbName) {
+                document.getElementById('loadingIndicator').innerHTML = '请先选择数据库';
+                return;
+            }
+
             const loadingIndicator = document.getElementById('loadingIndicator');
             const knowledgeTable = document.getElementById('knowledgeTable');
             
@@ -771,16 +846,17 @@
             knowledgeTable.style.display = 'none';
 
             try {
-                const response = await fetch('/api/knowledge?db_name=hologres');
+                const response = await fetch(`/knowledge/api/list?db_name=${encodeURIComponent(dbName)}`);
                 const data = await response.json();
 
                 if (response.ok && data.knowledge) {
                     if (data.knowledge.length === 0) {
-                        loadingIndicator.innerHTML = '<div class="empty-state">📭 暂无知识库条目，请添加</div>';
+                        loadingIndicator.innerHTML = '<div class="empty-state">📭 暂无知识库条目，请点击上方添加</div>';
                         loadingIndicator.style.display = 'block';
                         knowledgeTable.style.display = 'none';
                         allKnowledgeData = [];
-                        document.getElementById('searchStats').innerHTML = `共 <span id="totalCount">0</span> 条，显示 <span id="filteredCount">0</span> 条`;
+                        document.getElementById('totalCount').innerText = '0';
+                        document.getElementById('filteredCount').innerText = '0';
                         return;
                     }
 
@@ -789,6 +865,7 @@
                     
                     loadingIndicator.style.display = 'none';
                     knowledgeTable.style.display = 'table';
+                    updateDbInfo();
                 } else {
                     loadingIndicator.innerHTML = '加载失败: ' + (data.error || '未知错误');
                     loadingIndicator.style.display = 'block';
@@ -810,21 +887,26 @@
 
         async function addKnowledge(event) {
             event.preventDefault();
+            const dbName = getSelectedDbName();
             const question = document.getElementById('newQuestion').value.trim();
             const sql = document.getElementById('newSQL').value.trim();
             const messageDiv = document.getElementById('addMessage');
 
+            if (!dbName) {
+                showMessage(messageDiv, '❌ 请先选择数据库', 'error');
+                return;
+            }
             if (!question || !sql) {
                 showMessage(messageDiv, '❌ 问题和 SQL 不能为空', 'error');
                 return;
             }
 
             try {
-                const response = await fetch('/api/knowledge', {
+                const response = await fetch('/knowledge/api/add', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        db_name: 'hologres',
+                        db_name: dbName,
                         question: question,
                         sql: sql
                     })
@@ -852,20 +934,26 @@
                 return;
             }
 
+            const dbName = getSelectedDbName();
             const question = document.getElementById('drawerQuestion').value.trim();
             const sql = document.getElementById('drawerSQL').value.trim();
             const messageDiv = document.getElementById('drawerMessage');
 
+            if (!dbName) {
+                showMessage(messageDiv, '❌ 请先选择数据库', 'error');
+                return;
+            }
             if (!question || !sql) {
                 showMessage(messageDiv, '❌ 问题和 SQL 不能为空', 'error');
                 return;
             }
 
             try {
-                const response = await fetch(`/api/knowledge/${currentEditId}`, {
+                const response = await fetch(`/knowledge/api/update/${currentEditId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        db_name: dbName,
                         question: question,
                         sql: sql
                     })
@@ -887,10 +975,16 @@
         }
 
         async function deleteKnowledge(id) {
+            const dbName = getSelectedDbName();
+            if (!dbName) {
+                alert('请先选择数据库');
+                return;
+            }
+            
             if (!confirm('⚠️ 确定要删除这条知识吗？删除后不可恢复！')) return;
 
             try {
-                const response = await fetch(`/api/knowledge/${id}`, {
+                const response = await fetch(`/knowledge/api/delete/${id}?db_name=${encodeURIComponent(dbName)}`, {
                     method: 'DELETE'
                 });
 

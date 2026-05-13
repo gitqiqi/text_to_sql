@@ -24,7 +24,6 @@
             padding: 20px;
         }
 
-        /* 主标题 */
         .main-header {
             text-align: center;
             margin-bottom: 30px;
@@ -42,7 +41,6 @@
             font-size: 1rem;
         }
 
-        /* 数据库选择器 */
         .database-selector {
             background: white;
             border-radius: 16px;
@@ -91,7 +89,6 @@
             border-left: 4px solid #667eea;
         }
 
-        /* 主内容区域 - 使用 flex 布局支持侧边栏 */
         .main-content {
             display: flex;
             gap: 0;
@@ -99,7 +96,6 @@
             min-height: 600px;
         }
 
-        /* 左侧主体内容 */
         .content-main {
             flex: 1;
             background: white;
@@ -110,7 +106,6 @@
             margin-right: 0;
         }
 
-        /* 右侧 AI SQL 侧边栏 - 像 list 一样 */
         .ai-sidebar {
             position: fixed;
             right: 0;
@@ -127,10 +122,9 @@
         }
 
         .ai-sidebar.open {
-            width: 480px;
+            width: 520px;
         }
 
-        /* 侧边栏头部 */
         .sidebar-header {
             display: flex;
             justify-content: space-between;
@@ -181,14 +175,12 @@
             box-shadow: none;
         }
 
-        /* 侧边栏内容 */
         .sidebar-content {
             flex: 1;
             overflow-y: auto;
             padding: 24px;
         }
 
-        /* 打开侧边栏的按钮 - 固定在右侧边缘 */
         .open-sidebar-btn {
             position: fixed;
             right: 20px;
@@ -222,7 +214,6 @@
             width: 52px;
         }
 
-        /* 遮罩层 */
         .sidebar-overlay {
             position: fixed;
             top: 0;
@@ -238,12 +229,6 @@
             display: block;
         }
 
-        /* 当侧边栏打开时，给主内容添加右侧内边距效果 */
-        body.sidebar-open .content-main {
-            margin-right: 0;
-        }
-
-        /* 表单元素 */
         textarea, input[type="text"] {
             width: 100%;
             padding: 14px;
@@ -286,21 +271,13 @@
             transform: translateY(0);
         }
 
-        .btn-secondary {
-            background: linear-gradient(135deg, #868f96, #596164);
-        }
-
         .btn-small {
             padding: 6px 12px;
             font-size: 12px;
             margin-top: 0;
+            margin-left: 8px;
         }
 
-        .btn-danger {
-            background: linear-gradient(135deg, #f56565, #c53030);
-        }
-
-        /* 加载动画 */
         .loading {
             display: none;
             text-align: center;
@@ -325,7 +302,6 @@
             to { transform: rotate(360deg); }
         }
 
-        /* SQL 展示框 */
         .sql-box {
             background: #f8f9fa;
             border-left: 4px solid #667eea;
@@ -337,7 +313,6 @@
             margin: 12px 0;
         }
 
-        /* 结果区域 */
         .result-section {
             margin-top: 20px;
         }
@@ -362,7 +337,6 @@
             border-left: 4px solid #c00;
         }
 
-        /* 表格样式 */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -371,7 +345,7 @@
 
         th, td {
             border: 1px solid #e0e0e0;
-            padding: 10px;
+            padding: 8px;
             text-align: left;
         }
 
@@ -386,7 +360,6 @@
             background: #f5f5f5;
         }
 
-        /* 底部结果区域 */
         .bottom-result {
             background: white;
             border-radius: 20px;
@@ -411,12 +384,152 @@
             color: #667eea;
         }
 
-        /* 跑数查询区域 */
         .sql-query-section {
             margin-bottom: 24px;
         }
 
-        /* 响应式 */
+        .info-badge {
+            background: #e0e7ff;
+            color: #4338ca;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        .config-group {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 12px;
+            margin: 12px 0;
+        }
+
+        .strategy-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .strategy-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .strategy-option:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+
+        .strategy-option.selected {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+
+        .strategy-option input {
+            margin-top: 2px;
+        }
+
+        .strategy-content {
+            flex: 1;
+        }
+
+        .strategy-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .strategy-desc {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .table-search-container {
+            position: relative;
+            margin-top: 12px;
+        }
+
+        .table-search-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .table-search-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .table-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 12px 12px;
+            max-height: 250px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .table-suggestions.show {
+            display: block;
+        }
+
+        .suggestion-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .suggestion-item:hover {
+            background: #f0f0ff;
+        }
+
+        .selected-table-info {
+            background: #e8f0fe;
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-top: 8px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .selected-table-info.show {
+            display: block;
+        }
+
+        .clear-table-btn {
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 16px;
+            margin-left: 8px;
+            padding: 0 4px;
+        }
+
+        .clear-table-btn:hover {
+            color: #c00;
+            transform: none;
+            box-shadow: none;
+        }
+
         @media (max-width: 768px) {
             .ai-sidebar.open {
                 width: 100%;
@@ -435,7 +548,7 @@
     <div class="container">
         <div class="main-header">
             <h1>🤖 自然语言转SQL查询系统</h1>
-            <p>用自然语言提问，AI 自动生成 SQL 并执行查询 | 也支持直接编写 SQL 快速跑数</p>
+            <p>用自然语言提问，AI 自动生成 SQL 并执行查询 | 支持向量检索、指定表、全量检索三种模式</p>
         </div>
 
         <div class="database-selector">
@@ -445,11 +558,10 @@
             </select>
             <div class="database-description" id="databaseDescription"></div>
             <div id="kbStatus" class="kb-status" style="display: none;"></div>
-            <button id="kbManagementBtn" style="width: 100%; margin-top: 12px; background: #8b5cf6; color: white; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 16px; transition: background 0.3s;" onclick="goToKnowledgeManagement()" onmouseover="this.style.background='#7c3aed'" onmouseout="this.style.background='#8b5cf6'">📚 管理知识库</button>
+            <button id="kbManagementBtn" style="width: 100%; margin-top: 12px; background: #8b5cf6; color: white; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 16px;">📚 管理知识库</button>
         </div>
 
         <div class="main-content">
-            <!-- 左侧主体内容 -->
             <div class="content-main">
                 <div class="sql-query-section">
                     <h2 style="margin-top: 0; margin-bottom: 16px;">📝 跑数查询</h2>
@@ -460,7 +572,6 @@
                 </div>
             </div>
 
-            <!-- 右侧 AI SQL 侧边栏（像 list 一样从右侧滑出） -->
             <div class="ai-sidebar" id="aiSidebar">
                 <div class="sidebar-header">
                     <h2>✨ AI SQL <span class="badge">智能生成</span></h2>
@@ -469,17 +580,76 @@
                 <div class="sidebar-content">
                     <p style="color: #666; margin-bottom: 16px;">用自然语言提问，AI 会自动生成 SQL 并执行查询。</p>
                     <textarea id="nlQuery" placeholder="请输入您的自然语言查询，例如：查询最近一个月销量最高的10本书"></textarea>
+                    
                     <div style="margin: 16px 0;">
-                        <label style="font-weight: 600; color: #333; display: block; margin-bottom: 8px;">📋 表选择方式</label>
-                        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 12px;">
-                            <label style="display:flex; align-items:center; gap:6px;"><input type="radio" name="tableMode" id="tableModeAuto" value="auto" checked> 自动匹配相关表</label>
-                            <label style="display:flex; align-items:center; gap:6px;"><input type="radio" name="tableMode" id="tableModeManual" value="manual"> 手动选择单表</label>
+                        <label style="font-weight: 600; color: #333; display: block; margin-bottom: 12px;">🔍 检索策略</label>
+                        
+                        <div class="strategy-group">
+                            <div class="strategy-option" data-strategy="vector">
+                                <input type="radio" name="searchStrategy" id="strategyVector" value="vector" checked>
+                                <div class="strategy-content">
+                                    <div class="strategy-title">📊 向量检索</div>
+                                    <div class="strategy-desc">根据自然语言语义自动匹配最相关的表（推荐）</div>
+                                </div>
+                            </div>
+                            
+                            <div class="strategy-option" data-strategy="exact">
+                                <input type="radio" name="searchStrategy" id="strategyExact" value="exact">
+                                <div class="strategy-content">
+                                    <div class="strategy-title">🎯 指定表检索</div>
+                                    <div class="strategy-desc">手动选择或搜索表名，只使用单个表的schema</div>
+                                </div>
+                            </div>
+                            
+                            <div class="strategy-option" data-strategy="full">
+                                <input type="radio" name="searchStrategy" id="strategyFull" value="full">
+                                <div class="strategy-content">
+                                    <div class="strategy-title">🌐 全量检索</div>
+                                    <div class="strategy-desc">不使用向量筛选，将所有表的schema完整传递给AI（表多时可能影响性能）</div>
+                                </div>
+                            </div>
                         </div>
-                        <input id="tableSearch" placeholder="搜索表..." style="width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 14px; margin-bottom: 12px; display: none;">
-                        <select id="tableSelect" disabled style="width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 14px; background: #f8f9fa;">
-                            <option value="">请选择表</option>
-                        </select>
+
+                        <div id="vectorConfig" class="config-group">
+                            <label>
+                                📊 返回相关表数量：
+                                <input type="number" id="topKTables" value="10" min="1" max="20" step="1" style="width: 70px;">
+                                <span class="info-badge">推荐3-5</span>
+                            </label>
+                        </div>
+
+                        <div id="exactTableConfig" style="display: none;">
+                            <label style="font-weight: 600; color: #333; display: block; margin-bottom: 8px;">📋 搜索并选择表</label>
+                            <div class="table-search-container">
+                                <input type="text" id="tableSearchInput" class="table-search-input" placeholder="输入表名进行模糊搜索，例如: user、order">
+                                <div id="tableSuggestions" class="table-suggestions"></div>
+                            </div>
+                            <div id="selectedTableInfo" class="selected-table-info">
+                                <span>✅ 已选择: <strong id="selectedTableName"></strong></span>
+                                <button type="button" id="clearTableBtn" class="clear-table-btn" title="清除选择">✕</button>
+                            </div>
+                            <div style="font-size: 12px; color: #666; margin-top: 8px;">
+                                <span>💡 提示：输入关键字会自动模糊匹配表名，点击选择即可</span>
+                            </div>
+                        </div>
+
+                        <div id="fullConfig" class="config-group" style="display: none;">
+                            <div style="font-size: 13px; color: #666;">
+                                ⚠️ 全量检索会将数据库所有表的schema传递给AI，表数量较多时可能影响响应速度。
+                            </div>
+                        </div>
+
+                        <details style="margin-top: 12px;">
+                            <summary style="cursor: pointer; color: #667eea; font-size: 13px;">⚙️ 高级选项</summary>
+                            <div class="config-group" style="margin-top: 8px;">
+                                <label style="display: flex; align-items: center; gap: 8px;">
+                                    <input type="checkbox" id="fuzzyMatchCheckbox" checked>
+                                    <span>启用降级策略（指定表未找到时自动使用向量检索）</span>
+                                </label>
+                            </div>
+                        </details>
                     </div>
+                    
                     <button id="submitBtn">🤖 AI 生成 SQL 并执行</button>
                     <div class="loading" id="aiLoadingIndicator">AI 正在思考</div>
 
@@ -487,21 +657,16 @@
                         <h3>📄 生成的 SQL</h3>
                         <div class="sql-box" id="generatedSQL">等待输入...</div>
                     </div>
-
-                    </div>
                 </div>
             </div>
 
-            <!-- 遮罩层 -->
             <div class="sidebar-overlay" id="sidebarOverlay"></div>
         </div>
 
-        <!-- 打开侧边栏的按钮 -->
         <button class="open-sidebar-btn" id="openSidebarBtn">
             AI<br>SQL
         </button>
 
-        <!-- 底部：统一结果展示 -->
         <div class="bottom-result">
             <h2>📊 查询结果</h2>
             <div id="sharedResultSummary" class="shared-result-summary" style="display: none;"></div>
@@ -511,12 +676,15 @@
     </div>
 
     <script>
-        // 跳转到知识库管理页面
+        let allTables = [];
+        let selectedTable = null;
+        let searchTimeout = null;
+        let currentKnowledgeCount = 0;
+
         function goToKnowledgeManagement() {
-            window.location.href = '/knowledge-management';
+            window.location.href = '/knowledge/management';
         }
 
-        // 侧边栏控制
         const sidebar = document.getElementById('aiSidebar');
         const overlay = document.getElementById('sidebarOverlay');
         const openBtn = document.getElementById('openSidebarBtn');
@@ -538,20 +706,121 @@
         closeBtn.addEventListener('click', closeSidebar);
         overlay.addEventListener('click', closeSidebar);
 
-        // 按 ESC 关闭侧边栏
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && sidebar.classList.contains('open')) {
                 closeSidebar();
             }
         });
 
-        // 页面加载
-        window.addEventListener('load', async () => {
-            await loadDatabases();
-            await loadKbSources();
+        const strategyOptions = document.querySelectorAll('.strategy-option');
+        strategyOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                const radio = option.querySelector('input[type="radio"]');
+                radio.checked = true;
+                radio.dispatchEvent(new Event('change'));
+            });
         });
 
-        // 加载数据库列表
+        document.getElementById('strategyVector').addEventListener('change', () => {
+            document.getElementById('vectorConfig').style.display = 'block';
+            document.getElementById('exactTableConfig').style.display = 'none';
+            document.getElementById('fullConfig').style.display = 'none';
+            strategyOptions.forEach(opt => opt.classList.remove('selected'));
+            document.querySelector('[data-strategy="vector"]').classList.add('selected');
+        });
+
+        document.getElementById('strategyExact').addEventListener('change', () => {
+            document.getElementById('vectorConfig').style.display = 'none';
+            document.getElementById('exactTableConfig').style.display = 'block';
+            document.getElementById('fullConfig').style.display = 'none';
+            strategyOptions.forEach(opt => opt.classList.remove('selected'));
+            document.querySelector('[data-strategy="exact"]').classList.add('selected');
+        });
+
+        document.getElementById('strategyFull').addEventListener('change', () => {
+            document.getElementById('vectorConfig').style.display = 'none';
+            document.getElementById('exactTableConfig').style.display = 'none';
+            document.getElementById('fullConfig').style.display = 'block';
+            strategyOptions.forEach(opt => opt.classList.remove('selected'));
+            document.querySelector('[data-strategy="full"]').classList.add('selected');
+        });
+
+        const tableSearchInput = document.getElementById('tableSearchInput');
+        const tableSuggestions = document.getElementById('tableSuggestions');
+        const selectedTableInfo = document.getElementById('selectedTableInfo');
+        const selectedTableName = document.getElementById('selectedTableName');
+
+        document.getElementById('clearTableBtn').addEventListener('click', () => {
+            selectedTable = null;
+            selectedTableInfo.classList.remove('show');
+            tableSearchInput.value = '';
+            tableSuggestions.classList.remove('show');
+        });
+
+        function searchTables(keyword) {
+            if (!keyword.trim()) {
+                tableSuggestions.classList.remove('show');
+                return;
+            }
+
+            let pattern = keyword.toLowerCase();
+            let matchedTables = allTables.filter(table => {
+                const tableName = table.table_name.toLowerCase();
+                const fullName = table.schema ? `${table.schema}.${table.table_name}`.toLowerCase() : table.table_name.toLowerCase();
+                return tableName.includes(pattern) || fullName.includes(pattern);
+            });
+
+            matchedTables = matchedTables.slice(0, 10);
+
+            if (matchedTables.length === 0) {
+                tableSuggestions.innerHTML = '<div class="suggestion-item" style="color: #999;">未找到匹配的表</div>';
+                tableSuggestions.classList.add('show');
+                return;
+            }
+
+            tableSuggestions.innerHTML = matchedTables.map(table => `
+                <div class="suggestion-item" data-table-name="${table.table_name}" data-schema="${table.schema || ''}" data-columns='${JSON.stringify(table.columns || [])}'>
+                    <div>
+                        <span class="suggestion-table-name">${escapeHtml(table.schema ? `${table.schema}.${table.table_name}` : table.table_name)}</span>
+                        <span class="suggestion-schema" style="margin-left: 8px; font-size: 11px; color: #999;">${table.column_count || 0}个字段</span>
+                    </div>
+                    <div class="suggestion-columns" style="font-size: 11px; color: #666; margin-top: 4px;">${escapeHtml((table.columns || []).slice(0, 5).join(', '))}${(table.columns || []).length > 5 ? '...' : ''}</div>
+                </div>
+            `).join('');
+
+            document.querySelectorAll('.suggestion-item[data-table-name]').forEach(item => {
+                item.addEventListener('click', () => {
+                    const tableName = item.dataset.tableName;
+                    const schema = item.dataset.schema;
+                    selectedTable = schema ? `${schema}.${tableName}` : tableName;
+                    selectedTableName.textContent = selectedTable;
+                    selectedTableInfo.classList.add('show');
+                    tableSearchInput.value = selectedTable;
+                    tableSuggestions.classList.remove('show');
+                });
+            });
+
+            tableSuggestions.classList.add('show');
+        }
+
+        tableSearchInput.addEventListener('input', (e) => {
+            if (searchTimeout) clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                searchTables(e.target.value);
+            }, 300);
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!tableSearchInput?.contains(e.target) && !tableSuggestions?.contains(e.target)) {
+                tableSuggestions?.classList.remove('show');
+            }
+        });
+
+        window.addEventListener('load', async () => {
+            await loadDatabases();
+            document.querySelector('[data-strategy="vector"]').classList.add('selected');
+        });
+
         async function loadDatabases() {
             try {
                 const response = await fetch('/get_databases');
@@ -579,24 +848,17 @@
                         if (selected) description.textContent = selected.description;
                         loadKbStatus();
                         loadDbTables();
+                        selectedTable = null;
+                        selectedTableInfo?.classList.remove('show');
+                        if (tableSearchInput) tableSearchInput.value = '';
                     });
                     
-                    loadKbStatus();
-                    loadDbTables();
+                    await loadKbStatus();
+                    await loadDbTables();
                 }
             } catch (error) {
                 console.error('加载数据库失败:', error);
             }
-        }
-
-        let kbSupportedIds = new Set();
-
-        async function loadKbSources() {
-            try {
-                const r = await fetch('/api/knowledge/sources');
-                const j = await r.json();
-                if (r.ok && j.db_ids) kbSupportedIds = new Set(j.db_ids);
-            } catch (_) {}
         }
 
         async function loadKbStatus() {
@@ -615,15 +877,11 @@
                     box.textContent = j.error || '加载失败';
                     return;
                 }
-                if (j.unsupported) {
-                    box.textContent = j.message || '该数据源无知识库配置';
-                    return;
-                }
+                currentKnowledgeCount = j.row_count || 0;
                 const lines = [
                     `数据源：${j.db_name}`,
-                    `工作表：${j.sheet_name || ''}`,
-                    `来源：${j.from_upload ? '已上传覆盖' : '默认配置'}`,
-                    j.row_count != null ? `行数：${j.row_count}` : ''
+                    `知识库条目数：${j.row_count || 0}`,
+                    `存储方式：数据库 (knowledge.db_knowledge)`
                 ].filter(Boolean);
                 box.textContent = lines.join('\n');
             } catch (e) {
@@ -633,77 +891,23 @@
 
         async function loadDbTables() {
             const select = document.getElementById('databaseSelect');
-            const tableSelect = document.getElementById('tableSelect');
-            const tableSearch = document.getElementById('tableSearch');
-            const manualRadio = document.getElementById('tableModeManual');
-            if (!select || !tableSelect) return;
+            if (!select) return;
 
-            tableSelect.innerHTML = '<option value="">正在加载表...</option>';
             try {
                 const response = await fetch(`/api/db_tables?db_name=${encodeURIComponent(select.value)}`);
                 const data = await response.json();
                 if (response.ok && Array.isArray(data.tables)) {
-                    tableSelect.innerHTML = '<option value="">请选择表</option>';
-                    if (data.tables.length == 0) {
-                        tableSelect.innerHTML = '<option value="">无可用表</option>';
-                    } else {
-                        // 保存原始数据
-                        window.originalTableOptions = data.tables;
-                        // 显示所有选项
-                        data.tables.forEach(table => {
-                            const option = document.createElement('option');
-                            option.value = table.schema ? `${table.schema}.${table.table_name}` : table.table_name;
-                            option.textContent = table.schema ? `${table.schema}.${table.table_name}` : table.table_name;
-                            tableSelect.appendChild(option);
-                        });
-                    }
+                    allTables = data.tables;
+                    console.log(`加载了 ${allTables.length} 个表`);
                 } else {
-                    const errorMsg = data.error || '加载表失败';
-                    tableSelect.innerHTML = `<option value="">${errorMsg}</option>`;
-                    window.originalTableOptions = [];
+                    allTables = [];
                 }
             } catch (error) {
-                tableSelect.innerHTML = '<option value="">请求失败</option>';
-                window.originalTableOptions = [];
-            }
-            if (manualRadio) {
-                tableSelect.disabled = !manualRadio.checked;
-                tableSearch.style.display = manualRadio.checked ? 'block' : 'none';
+                console.error('加载表失败:', error);
+                allTables = [];
             }
         }
 
-        document.getElementById('tableModeAuto').addEventListener('change', () => {
-            const tableSelect = document.getElementById('tableSelect');
-            const tableSearch = document.getElementById('tableSearch');
-            tableSelect.disabled = true;
-            tableSearch.style.display = 'none';
-        });
-
-        document.getElementById('tableModeManual').addEventListener('change', () => {
-            const tableSelect = document.getElementById('tableSelect');
-            const tableSearch = document.getElementById('tableSearch');
-            tableSelect.disabled = false;
-            tableSearch.style.display = 'block';
-        });
-
-        document.getElementById('tableSearch').addEventListener('input', function() {
-            const filter = this.value.toLowerCase();
-            const tableSelect = document.getElementById('tableSelect');
-            tableSelect.innerHTML = '<option value="">请选择表</option>';
-            if (window.originalTableOptions) {
-                window.originalTableOptions.forEach(table => {
-                    const displayName = table.schema ? `${table.schema}.${table.table_name}` : table.table_name;
-                    if (displayName.toLowerCase().includes(filter)) {
-                        const option = document.createElement('option');
-                        option.value = table.schema ? `${table.schema}.${table.table_name}` : table.table_name;
-                        option.textContent = displayName;
-                        tableSelect.appendChild(option);
-                    }
-                });
-            }
-        });
-
-        // 执行 SQL
         document.getElementById('executeSqlBtn').addEventListener('click', async () => {
             const sql = document.getElementById('sqlQuery').value.trim();
             const db = document.getElementById('databaseSelect').value;
@@ -731,11 +935,11 @@
                 if (response.ok) {
                     resultSummary.textContent = `来源：直接 SQL 查询（${db}）`;
                     resultSummary.style.display = 'block';
-                    if (data.sql_result?.length > 0) {
+                    if (data.sql_result && data.sql_result.length > 0) {
                         const columns = Object.keys(data.sql_result[0]);
                         resultData.innerHTML = createTable(data.sql_result, columns);
                     } else {
-                        resultData.textContent = '查询成功，但未返回数据';
+                        resultData.innerHTML = '<div style="color: #666;">查询成功，但未返回数据</div>';
                     }
                 } else {
                     resultError.textContent = data.error || '执行失败';
@@ -749,7 +953,6 @@
             }
         });
 
-        // AI 查询
         document.getElementById('submitBtn').addEventListener('click', async () => {
             const query = document.getElementById('nlQuery').value.trim();
             const db = document.getElementById('databaseSelect').value;
@@ -758,12 +961,23 @@
             const resultData = document.getElementById('sharedResultData');
             const resultError = document.getElementById('sharedResultError');
             const resultSummary = document.getElementById('sharedResultSummary');
-            const manualMode = document.getElementById('tableModeManual').checked;
-            const selectedTable = manualMode ? document.getElementById('tableSelect').value : null;
+            
+            const useVectorSearch = document.getElementById('strategyVector').checked;
+            const useFullTable = document.getElementById('strategyFull').checked;
+            const fuzzyMatch = document.getElementById('fuzzyMatchCheckbox').checked;
+            const topKTables = parseInt(document.getElementById('topKTables').value) || 10;
+            
+            let selectedTableValue = null;
+            if (document.getElementById('strategyExact').checked) {
+                if (!selectedTable && fuzzyMatch) {
+                    alert('请搜索并选择一个表');
+                    return;
+                }
+                selectedTableValue = selectedTable;
+            }
 
             if (!query) { alert('请输入查询内容'); return; }
             if (!db) { alert('请选择数据库'); return; }
-            if (manualMode && !selectedTable) { alert('请选择具体表'); return; }
 
             loading.style.display = 'block';
             generatedSQL.textContent = '生成中...';
@@ -772,28 +986,43 @@
             resultSummary.style.display = 'none';
 
             try {
+                const requestBody = {
+                    nl_query: query,
+                    db_name: db,
+                    selected_table: useFullTable ? null : selectedTableValue,
+                    use_vector_search: useVectorSearch,
+                    top_k_tables: topKTables
+                };
+                
+                console.log('请求参数:', requestBody);
+                
                 const response = await fetch('/execute_nl_query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        nl_query: query,
-                        db_name: db,
-                        selected_table: selectedTable,
-                        use_vector_search: !manualMode
-                    })
+                    body: JSON.stringify(requestBody)
                 });
                 const data = await response.json();
                 
                 if (response.ok) {
                     generatedSQL.textContent = data.generated_sql || '未生成 SQL';
-                    const modeText = manualMode ? `手动表 ${selectedTable}` : '智能匹配相关表';
-                    resultSummary.textContent = `来源：AI 生成 SQL（${db}，${modeText}）`;
+                    
+                    let modeText = '';
+                    if (useFullTable) {
+                        modeText = '全量检索（使用所有表的schema）';
+                    } else if (useVectorSearch) {
+                        modeText = `向量检索（匹配前${topKTables}个相关表）`;
+                    } else {
+                        modeText = `指定表 "${selectedTableValue}" ${fuzzyMatch ? '' : '(精确匹配)'}`;
+                    }
+                    
+                    resultSummary.textContent = `来源：AI 生成 SQL（${db}，${modeText}）| 知识库条目：${currentKnowledgeCount}`;
                     resultSummary.style.display = 'block';
-                    if (data.sql_result?.length > 0) {
+                    
+                    if (data.sql_result && data.sql_result.length > 0) {
                         const columns = Object.keys(data.sql_result[0]);
                         resultData.innerHTML = createTable(data.sql_result, columns);
                     } else {
-                        resultData.textContent = '查询成功，但未返回数据';
+                        resultData.innerHTML = '<div style="color: #666;">查询成功，但未返回数据</div>';
                     }
                 } else {
                     generatedSQL.textContent = '生成失败';
@@ -810,23 +1039,32 @@
         });
 
         function createTable(data, columns) {
-            let html = '<table><thead><tr>';
+            if (!data || data.length === 0) {
+                return '<div style="color: #666;">无数据</div>';
+            }
+            
+            let html = '<div style="overflow-x: auto;"><table>';
+            html += '<thead><tr>';
             columns.forEach(col => html += `<th>${escapeHtml(col)}</th>`);
-            html += '</tr></thead><tbody>';
+            html += '</thead><tbody>';
+            
             data.forEach(row => {
                 html += '<tr>';
                 columns.forEach(col => {
                     let val = row[col];
                     if (val === null || val === undefined) val = 'NULL';
-                    html += `<td>${escapeHtml(String(val))}</td>`;
+                    if (typeof val === 'object') val = JSON.stringify(val);
+                    html += `<td title="${escapeHtml(String(val))}">${escapeHtml(String(val).substring(0, 200))}${String(val).length > 200 ? '...' : ''}</td>`;
                 });
                 html += '</tr>';
             });
-            html += '</tbody></table>';
+            
+            html += '</tbody><tr></div>';
             return html;
         }
 
         function escapeHtml(str) {
+            if (!str) return '';
             return str.replace(/[&<>]/g, function(m) {
                 if (m === '&') return '&amp;';
                 if (m === '<') return '&lt;';
@@ -835,12 +1073,7 @@
             });
         }
 
-
-        // 页面加载
-        window.addEventListener('load', async () => {
-            await loadDatabases();
-            await loadKbSources();
-        });
+        document.getElementById('kbManagementBtn').addEventListener('click', goToKnowledgeManagement);
     </script>
 </body>
 </html>
