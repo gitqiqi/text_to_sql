@@ -4,6 +4,7 @@ import time
 import os
 import threading
 import re
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 from functools import wraps
@@ -13,6 +14,7 @@ from sqlalchemy import create_engine, text
 from volcenginesdkarkruntime import Ark
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import json
 
 load_dotenv()
 
@@ -263,14 +265,22 @@ class DatabaseManager:
         return ' '.join(lines) if lines else ""
 
 
-# ==================== 知识库管理（数据库版本） ====================
+# ==================== 知识库管理 ====================
 class KnowledgeBase:
     def __init__(self, db_name: str):
         self.db_name = db_name
         self.engine = DatabasePoolManager.get_engine(db_name)
-        self._ensure_table()
+        self._ensure_knowledge_table()
+        
+        # 创建缓存目录
+        self.cache_dir = Path("./cache/embeddings")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 向量模型维度
+        self.vector_dim = 384
     
-    def _ensure_table(self):
+    def _ensure_knowledge_table(self):
+        """确保知识库表存在（用于存储用户添加的 question-sql 示例）"""
         create_table_sql = """
         CREATE SCHEMA IF NOT EXISTS knowledge;
         CREATE TABLE IF NOT EXISTS knowledge.db_knowledge (
@@ -288,7 +298,153 @@ class KnowledgeBase:
                 conn.commit()
                 print(f"   ✅ 知识库表已就绪: {self.db_name}.knowledge.db_knowledge")
         except Exception as e:
-            print(f"   ⚠️ 创建知识库表时出现问题: {e}")
+            print(f"   ⚠️ 知识库表检查失败: {e}")
+    
+    # ========== 向量操作方法 ==========
+    
+    def save_embeddings_to_holo(self, table_records: List[Dict], embeddings: np.ndarray):
+        """保存向量到Hologres"""
+        with self.engine.connect() as conn:
+            trans = conn.begin()
+            try:
+                for record, embedding in zip(table_records, embeddings):
+                    vector_text = record.get('_vector_text', '')
+                    text_hash = hashlib.md5(vector_text.encode()).hexdigest()
+                    schema_hash = text_hash
+                    
+                    embedding_list = embedding.tolist()
+                    column_info_json = json.dumps(record.get('_columns_json', []))
+                    
+                    # 删除旧记录
+                    delete_sql = """
+                    DELETE FROM knowledge.table_embeddings 
+                    WHERE db_name = :db_name 
+                      AND (schema_name = :schema_name OR (schema_name IS NULL AND :schema_name IS NULL))
+                      AND table_name = :table_name
+                    """
+                    
+                    conn.execute(
+                        text(delete_sql),
+                        {
+                            "db_name": self.db_name,
+                            "schema_name": record.get('schema'),
+                            "table_name": record['table_name']
+                        }
+                    )
+                    
+                    # 插入新记录
+                    insert_sql = """
+                    INSERT INTO knowledge.table_embeddings 
+                        (db_name, schema_name, table_name, table_comment, column_info, 
+                         vector_text, embedding, text_hash, schema_hash, updated_at)
+                    VALUES 
+                        (:db_name, :schema_name, :table_name, :table_comment, :column_info, 
+                         :vector_text, :embedding, :text_hash, :schema_hash, NOW())
+                    """
+                    
+                    conn.execute(
+                        text(insert_sql),
+                        {
+                            "db_name": self.db_name,
+                            "schema_name": record.get('schema'),
+                            "table_name": record['table_name'],
+                            "table_comment": record.get('table_comment', ''),
+                            "column_info": column_info_json,
+                            "vector_text": vector_text,
+                            "embedding": embedding_list,
+                            "text_hash": text_hash,
+                            "schema_hash": schema_hash
+                        }
+                    )
+                
+                trans.commit()
+                print(f"   ✅ 保存 {len(table_records)} 个向量到Hologres")
+                return True
+                
+            except Exception as e:
+                trans.rollback()
+                print(f"   ❌ 保存向量失败: {e}")
+                return False
+    
+    def vector_search_in_holo(self, query_embedding: List[float], top_k: int = 10) -> List[Dict]:
+        """在Hologres中进行向量检索"""
+        
+        sql = """
+        SELECT 
+            schema_name,
+            table_name,
+            table_comment,
+            column_info,
+            vector_text,
+            (1 - (embedding <=> CAST(:query_embedding AS real[]))) as similarity_score
+        FROM knowledge.table_embeddings
+        WHERE db_name = :db_name
+        ORDER BY embedding <=> CAST(:query_embedding AS real[])
+        LIMIT :top_k
+        """
+        
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(
+                    text(sql),
+                    {
+                        "db_name": self.db_name,
+                        "query_embedding": query_embedding,
+                        "top_k": top_k
+                    }
+                )
+                
+                rows = result.fetchall()
+                
+                if not rows:
+                    return []
+                
+                results = []
+                for i, row in enumerate(rows, 1):
+                    columns_json = row[3] if row[3] else []
+                    
+                    results.append({
+                        'schema': row[0],
+                        'table_name': row[1],
+                        'table_comment': row[2] or '',
+                        '_columns_json': columns_json,
+                        '_vector_text': row[4] or '',
+                        '_similarity_score': float(row[5]),
+                        '_rank': i
+                    })
+                
+                return results
+                
+        except Exception as e:
+            print(f"   ❌ Hologres向量检索失败: {e}")
+            return []
+    
+    def check_holo_vectors_exist(self) -> bool:
+        """检查Hologres中是否已有向量数据"""
+        sql = """
+        SELECT COUNT(*) 
+        FROM knowledge.table_embeddings 
+        WHERE db_name = :db_name
+        """
+        
+        with self.engine.connect() as conn:
+            result = conn.execute(text(sql), {"db_name": self.db_name})
+            count = result.fetchone()[0]
+            return count > 0
+    
+    def get_holo_vectors_count(self) -> int:
+        """获取Hologres中向量数量"""
+        sql = """
+        SELECT COUNT(*) 
+        FROM knowledge.table_embeddings 
+        WHERE db_name = :db_name
+        """
+        
+        with self.engine.connect() as conn:
+            result = conn.execute(text(sql), {"db_name": self.db_name})
+            return result.fetchone()[0]
+    
+    # ========== 表结构获取方法 ==========
     
     @monitor_function
     def get_table_schema(self) -> Dict:
@@ -674,7 +830,7 @@ class KnowledgeBase:
             return False
 
 
-# ==================== 向量检索 ====================
+# ==================== 向量检索类 ====================
 class TableSchemaSearcher:
     _model = None
     _model_lock = threading.Lock()
@@ -692,36 +848,69 @@ class TableSchemaSearcher:
     
     @classmethod
     @monitor_function
-    def search(cls, db_name: str, query: str, top_k: int = 10, kb: KnowledgeBase = None) -> List[Dict]:
+    def search(cls, db_name: str, query: str, top_k: int = 10, 
+               kb: KnowledgeBase = None, use_holo_index: bool = True,
+               force_rebuild_vectors: bool = False) -> List[Dict]:
+        
         if not kb:
             kb = KnowledgeBase(db_name)
         
-        table_records, vector_texts = kb.get_vector_texts()
+        print(f"\n    📊 向量检索开始...")
+        print(f"    ├─ 查询: {query[:80]}...")
         
-        if not table_records:
-            return []
-        
-        print(f"\n    📊 向量检索: {len(table_records)} 个表")
+        if use_holo_index:
+            vectors_count = kb.get_holo_vectors_count()
+            
+            if vectors_count == 0 or force_rebuild_vectors:
+                print(f"    ├─ Hologres中无向量数据或强制重建，开始生成并保存...")
+                
+                table_records, vector_texts = kb.get_vector_texts()
+                
+                if not table_records:
+                    print(f"    ⚠️ 没有找到任何表")
+                    return []
+                
+                print(f"    ├─ 找到 {len(table_records)} 个表，生成向量中...")
+                
+                model = cls._get_model()
+                
+                batch_size = 50
+                all_embeddings = []
+                for i in range(0, len(vector_texts), batch_size):
+                    batch = vector_texts[i:i+batch_size]
+                    batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False)
+                    all_embeddings.extend(batch_embeddings)
+                    print(f"    ├─ 向量生成: {min(i+batch_size, len(vector_texts))}/{len(vector_texts)}")
+                
+                embeddings = np.array(all_embeddings)
+                kb.save_embeddings_to_holo(table_records, embeddings)
+                
+                print(f"    ├─ 向量已保存到Hologres")
+            else:
+                print(f"    ├─ 使用Hologres已有向量（{vectors_count}个表）")
         
         model = cls._get_model()
-        
+        query_start = time.time()
         query_emb = model.encode([query], convert_to_numpy=True, show_progress_bar=False)[0]
-        embeddings = model.encode(vector_texts, convert_to_numpy=True, show_progress_bar=False)
+        query_duration = (time.time() - query_start) * 1000
+        print(f"    ├─ 查询向量生成: {query_duration:.2f} ms")
         
-        similarities = np.dot(embeddings, query_emb) / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(query_emb) + 1e-10)
-        top_indices = np.argsort(-similarities)[:top_k]
+        search_start = time.time()
+        results = kb.vector_search_in_holo(query_emb.tolist(), top_k)
+        search_duration = (time.time() - search_start) * 1000
+        print(f"    ├─ Hologres向量检索: {search_duration:.2f} ms")
         
-        print(f"    📈 Top {len(top_indices)} 相似表:")
-        results = []
-        for i, idx in enumerate(top_indices, 1):
-            record = table_records[idx].copy()
-            similarity = float(similarities[idx])
-            table_display = f"{record.get('schema', '')}.{record['table_name']}" if record.get('schema') else record['table_name']
-            print(f"        {i}. {similarity:.4f} - {table_display}")
-            
-            record['_similarity_score'] = similarity
-            record['_rank'] = i
-            results.append(record)
+        if not results:
+            print(f"    ⚠️ 向量检索无结果")
+            return []
+        
+        print(f"    📈 检索结果 Top {len(results)}:")
+        for r in results:
+            table_display = f"{r['schema']}.{r['table_name']}" if r['schema'] else r['table_name']
+            print(f"        {r['_rank']}. {r['_similarity_score']:.4f} - {table_display}")
+        
+        total_duration = (time.time() - query_start) * 1000
+        print(f"    ✅ 检索完成，总耗时: {total_duration:.2f} ms")
         
         return results
 
@@ -744,6 +933,7 @@ class TextToSQLConverter:
         selected_table: Optional[str] = None,
         use_vector_search: bool = True,
         top_k_tables: int = 10,
+        force_rebuild_vectors: bool = False,
     ) -> Tuple[str, pd.DataFrame]:
         print(f"\n📝 查询: {nl_query}")
         
@@ -757,13 +947,21 @@ class TextToSQLConverter:
                 print(f"   ✅ 只传递了表: {selected_table}")
         elif use_vector_search:
             print(f"🔍 向量检索模式: Top {top_k_tables}")
-            best_tables = TableSchemaSearcher.search(self.db_name, nl_query, top_k_tables, self.kb)
+            best_tables = TableSchemaSearcher.search(
+                self.db_name, nl_query, top_k_tables, self.kb, 
+                use_holo_index=True, force_rebuild_vectors=force_rebuild_vectors
+            )
             
             if not best_tables:
                 formatted_tables = self.kb.get_formatted_schema()
                 print(f"   ⚠️ 向量检索无结果，使用所有表")
             else:
-                selected_names = [f"{t['schema']}.{t['table_name']}" if t['schema'] else t['table_name'] for t in best_tables]
+                selected_names = []
+                for t in best_tables:
+                    if t.get('schema'):
+                        selected_names.append(f"{t['schema']}.{t['table_name']}")
+                    else:
+                        selected_names.append(t['table_name'])
                 formatted_tables = self.kb.get_formatted_schema(selected_names)
                 print(f"   ✅ 传递了 {len(selected_names)} 个相关表")
         else:
@@ -781,3 +979,77 @@ class TextToSQLConverter:
         result = self.db.execute_sql(sql)
         
         return sql, result
+
+
+# ==================== 辅助函数 ====================
+def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
+    """预计算所有数据库的表结构向量并保存到Hologres"""
+    
+    if db_name:
+        db_names = [db_name]
+    else:
+        from config import get_available_databases
+        db_configs = get_available_databases()
+        db_names = [db_config['id'] for db_config in db_configs]
+    
+    for name in db_names:
+        print(f"\n{'='*60}")
+        print(f"处理数据库: {name}")
+        print(f"{'='*60}")
+        
+        try:
+            kb = KnowledgeBase(name)
+            
+            table_records, vector_texts = kb.get_vector_texts()
+            
+            if not table_records:
+                print(f"   ⚠️ 没有找到任何表")
+                continue
+            
+            print(f"   ├─ 找到 {len(table_records)} 个表")
+            
+            vectors_count = kb.get_holo_vectors_count()
+            if vectors_count > 0 and not force_rebuild:
+                print(f"   ├─ Hologres中已有 {vectors_count} 个向量，跳过（使用 --force 强制重建）")
+                continue
+            
+            print(f"   ├─ 加载向量模型...")
+            model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+            
+            print(f"   ├─ 生成向量中...")
+            batch_size = 50
+            all_embeddings = []
+            for i in range(0, len(vector_texts), batch_size):
+                batch = vector_texts[i:i+batch_size]
+                batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False)
+                all_embeddings.extend(batch_embeddings)
+                print(f"   ├─ 已处理 {min(i+batch_size, len(vector_texts))}/{len(vector_texts)}")
+            
+            embeddings = np.array(all_embeddings)
+            
+            kb.save_embeddings_to_holo(table_records, embeddings)
+            
+            print(f"   ✅ 完成！已保存 {len(table_records)} 个向量到Hologres")
+            
+        except Exception as e:
+            print(f"   ❌ 处理数据库 {name} 时出错: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "precompute":
+        if len(sys.argv) > 2:
+            db_name = sys.argv[2]
+        else:
+            db_name = None
+        
+        force = len(sys.argv) > 3 and sys.argv[3] == "--force"
+        
+        precompute_all_embeddings(db_name, force)
+    else:
+        print("用法:")
+        print("  python app_core.py precompute              # 预计算所有数据库向量")
+        print("  python app_core.py precompute your_db      # 预计算指定数据库向量")
+        print("  python app_core.py precompute your_db --force  # 强制重建")
