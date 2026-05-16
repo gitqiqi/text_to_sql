@@ -1,4 +1,4 @@
-# app_core.py - 核心类和公共函数
+# app_core.py - 核心类和公共函数（Hologres 适配版）
 from pathlib import Path
 import time
 import os
@@ -27,6 +27,21 @@ from config import (
 POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '5'))
 MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', '10'))
 POOL_PRE_PING = os.getenv('DB_POOL_PRE_PING', 'true').lower() == 'true'
+
+# 向量模型路径配置
+_model_path_config = os.getenv('SENTENCE_TRANSFORMER_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
+
+# 解析路径
+if _model_path_config.startswith('../') or _model_path_config.startswith('./'):
+    current_file_dir = Path(__file__).parent.absolute()
+    SENTENCE_TRANSFORMER_MODEL = str(current_file_dir / _model_path_config)
+elif not _model_path_config.startswith('/') and not _model_path_config.startswith('http'):
+    current_file_dir = Path(__file__).parent.absolute()
+    SENTENCE_TRANSFORMER_MODEL = str(current_file_dir / _model_path_config)
+else:
+    SENTENCE_TRANSFORMER_MODEL = _model_path_config
+
+print(f"📦 向量模型路径: {SENTENCE_TRANSFORMER_MODEL}")
 
 
 # ==================== 性能监控装饰器 ====================
@@ -271,8 +286,9 @@ class KnowledgeBase:
         self.db_name = db_name
         self.engine = DatabasePoolManager.get_engine(db_name)
         self._ensure_knowledge_table()
+        self._ensure_vector_table()
         
-        # 创建缓存目录
+        # 缓存目录
         self.cache_dir = Path("./cache/embeddings")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -280,7 +296,7 @@ class KnowledgeBase:
         self.vector_dim = 384
     
     def _ensure_knowledge_table(self):
-        """确保知识库表存在（用于存储用户添加的 question-sql 示例）"""
+        """确保知识库表存在"""
         create_table_sql = """
         CREATE SCHEMA IF NOT EXISTS knowledge;
         CREATE TABLE IF NOT EXISTS knowledge.db_knowledge (
@@ -296,14 +312,41 @@ class KnowledgeBase:
             with self.engine.connect() as conn:
                 conn.execute(text(create_table_sql))
                 conn.commit()
-                print(f"   ✅ 知识库表已就绪: {self.db_name}.knowledge.db_knowledge")
+                print(f"   ✅ 知识库表已就绪")
         except Exception as e:
             print(f"   ⚠️ 知识库表检查失败: {e}")
+    
+    def _ensure_vector_table(self):
+        """确保向量表存在（使用新表名）"""
+        create_table_sql = """
+        CREATE SCHEMA IF NOT EXISTS knowledge;
+        CREATE TABLE IF NOT EXISTS knowledge.table_embeddings_v2 (
+            id BIGSERIAL PRIMARY KEY,
+            db_name VARCHAR(50) NOT NULL,
+            schema_name VARCHAR(100),
+            table_name VARCHAR(100) NOT NULL,
+            table_comment TEXT,
+            column_info JSONB,
+            vector_text TEXT,
+            embedding FLOAT4[] CHECK(array_ndims(embedding) = 1 AND array_length(embedding, 1) = 384),
+            text_hash VARCHAR(64),
+            schema_hash VARCHAR(64),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text(create_table_sql))
+                conn.commit()
+                print(f"   ✅ 向量表已就绪: knowledge.table_embeddings_v2")
+        except Exception as e:
+            print(f"   ⚠️ 向量表创建失败: {e}")
     
     # ========== 向量操作方法 ==========
     
     def save_embeddings_to_holo(self, table_records: List[Dict], embeddings: np.ndarray):
-        """保存向量到Hologres"""
+        """保存向量到Hologres（使用新表）"""
         with self.engine.connect() as conn:
             trans = conn.begin()
             try:
@@ -317,7 +360,7 @@ class KnowledgeBase:
                     
                     # 删除旧记录
                     delete_sql = """
-                    DELETE FROM knowledge.table_embeddings 
+                    DELETE FROM knowledge.table_embeddings_v2 
                     WHERE db_name = :db_name 
                       AND (schema_name = :schema_name OR (schema_name IS NULL AND :schema_name IS NULL))
                       AND table_name = :table_name
@@ -334,7 +377,7 @@ class KnowledgeBase:
                     
                     # 插入新记录
                     insert_sql = """
-                    INSERT INTO knowledge.table_embeddings 
+                    INSERT INTO knowledge.table_embeddings_v2 
                         (db_name, schema_name, table_name, table_comment, column_info, 
                          vector_text, embedding, text_hash, schema_hash, updated_at)
                     VALUES 
@@ -367,8 +410,13 @@ class KnowledgeBase:
                 return False
     
     def vector_search_in_holo(self, query_embedding: List[float], top_k: int = 10) -> List[Dict]:
-        """在Hologres中进行向量检索"""
+        """在Hologres中使用Proxima索引进行向量检索"""
         
+        # 将查询向量转换为 PostgreSQL 数组字符串格式
+        embedding_str = '{' + ','.join(str(x) for x in query_embedding) + '}'
+        
+        # 使用 Hologres Proxima 专有函数进行近似查询
+        # 注意：ORDER BY 必须使用 ASC，与 SquaredEuclidean 距离函数配合
         sql = """
         SELECT 
             schema_name,
@@ -376,20 +424,26 @@ class KnowledgeBase:
             table_comment,
             column_info,
             vector_text,
-            (1 - (embedding <=> CAST(:query_embedding AS real[]))) as similarity_score
-        FROM knowledge.table_embeddings
+            pm_approx_squared_euclidean_distance(embedding, CAST(:query_embedding AS float4[])) AS similarity_score
+        FROM knowledge.table_embeddings_v2
         WHERE db_name = :db_name
-        ORDER BY embedding <=> CAST(:query_embedding AS real[])
+        ORDER BY similarity_score ASC
         LIMIT :top_k
         """
         
         try:
             with self.engine.connect() as conn:
+                # 对于大数据量查询，可以使用 Serverless 资源
+                try:
+                    conn.execute(text("SET hg_computing_resource = 'serverless'"))
+                except:
+                    pass
+                
                 result = conn.execute(
                     text(sql),
                     {
                         "db_name": self.db_name,
-                        "query_embedding": query_embedding,
+                        "query_embedding": embedding_str,
                         "top_k": top_k
                     }
                 )
@@ -423,7 +477,7 @@ class KnowledgeBase:
         """检查Hologres中是否已有向量数据"""
         sql = """
         SELECT COUNT(*) 
-        FROM knowledge.table_embeddings 
+        FROM knowledge.table_embeddings_v2 
         WHERE db_name = :db_name
         """
         
@@ -436,7 +490,7 @@ class KnowledgeBase:
         """获取Hologres中向量数量"""
         sql = """
         SELECT COUNT(*) 
-        FROM knowledge.table_embeddings 
+        FROM knowledge.table_embeddings_v2 
         WHERE db_name = :db_name
         """
         
@@ -841,7 +895,7 @@ class TableSchemaSearcher:
             with cls._model_lock:
                 if cls._model is None:
                     load_start = time.time()
-                    cls._model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+                    cls._model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
                     load_duration = (time.time() - load_start) * 1000
                     print(f"    ├─ 加载向量模型: {load_duration:.2f} ms")
         return cls._model
@@ -1014,7 +1068,7 @@ def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
                 continue
             
             print(f"   ├─ 加载向量模型...")
-            model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+            model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
             
             print(f"   ├─ 生成向量中...")
             batch_size = 50
