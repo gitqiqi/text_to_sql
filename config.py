@@ -59,16 +59,6 @@ DATABASE_CONFIGS = {
         'display_name': 'Hologres',
         'description': '阿里云 Hologres 实时数仓'
     },
-    'book': {
-        'type': 'postgresql',
-        'host': os.getenv('DB_BOOK_HOST'),
-        'port': os.getenv('DB_BOOK_PORT', '5432'),
-        'name': os.getenv('DB_BOOK_NAME'),
-        'user': os.getenv('DB_BOOK_USER'),
-        'password': os.getenv('DB_BOOK_PASSWORD'),
-        'display_name': '盒子数据源',
-        'description': '盒子系统数据库，包含图书、课程等信息'
-    },
 }
 
 # 可根据需要添加SQLite测试数据库
@@ -84,10 +74,6 @@ DATABASE_CONFIGS = {
 KNOWLEDGE_BASE_CONFIGS = {
     'hologres': {
         'file_path': '/Users/cherry/Desktop/数据库表结构/holo.xlsx',
-        'sheet_name': '知识库'
-    },
-    'book': {
-        'file_path': '/Users/cherry/Desktop/数据库表结构/盒子-book.xlsx',
         'sheet_name': '知识库'
     },
 }
@@ -107,7 +93,6 @@ def get_available_databases() -> list:
             'description': config['description']
         }
         for db_id, config in DATABASE_CONFIGS.items()
-        if config['type'] != 'mysql'  # 确保跳过MySQL
     ]
 
 

@@ -10,8 +10,10 @@ __pycache__/
 *.pyd
 .Python
 
-# 虚拟环境（在 text_to_sql 子目录下的虚拟环境）
-text_to_sql/text_to_sql/
+# 虚拟环境
+venv/
+env/
+.venv/
 
 # IDE 配置
 .vscode/
@@ -19,6 +21,9 @@ text_to_sql/text_to_sql/
 *.swp
 *.swo
 .ipynb_checkpoints/
+
+# Claude Code
+.claude/
 
 # 项目缓存
 cache/

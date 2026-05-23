@@ -537,6 +537,12 @@
             <div class="db-info" id="dbInfo">知识库条目: --</div>
         </div>
 
+        <div class="tab-bar" style="display: flex; gap: 8px; margin-bottom: 16px; background: white; padding: 8px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);">
+            <button class="tab-btn active" data-tab="sql" style="flex: 1; padding: 10px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; background: linear-gradient(135deg, #667eea, #764ba2); color: white;">📋 SQL 知识库</button>
+            <button class="tab-btn" data-tab="glossary" style="flex: 1; padding: 10px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; background: #f0f0f0; color: #555;">📖 业务名词</button>
+        </div>
+
+        <div id="tab-sql">
         <div class="content">
             <div class="panel">
                 <h2>➕ 添加新条目</h2>
@@ -589,6 +595,47 @@
                 </table>
             </div>
         </div>
+        </div><!-- /tab-sql -->
+
+        <div id="tab-glossary" style="display: none;">
+            <div class="content">
+                <div class="panel">
+                    <h2>➕ 添加业务名词</h2>
+                    <div id="addGlossaryMessage"></div>
+                    <form id="addGlossaryForm" onsubmit="addGlossary(event)">
+                        <div class="form-group">
+                            <label for="newTerm">业务名词 *</label>
+                            <input type="text" id="newTerm" required placeholder="例如：扩科">
+                        </div>
+                        <div class="form-group">
+                            <label for="newDefinition">释义 *（详细说明判定逻辑/计算方式，AI 会按此理解）</label>
+                            <textarea id="newDefinition" required placeholder="例如：扩科指的是已购买某科目课程的学生再次购买其他科目课程。判定逻辑：在 dwd_xxx 表中，相同 student_id 出现 2 个及以上不同 subject 即为扩科。" style="min-height: 100px;"></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-success">➕ 添加名词</button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>📖 业务名词列表</h2>
+                <button class="btn refresh-btn" onclick="loadGlossary()">🔄 刷新列表</button>
+                <div class="table-container">
+                    <div id="glossaryLoadingIndicator" class="loading">正在加载业务名词...</div>
+                    <table id="glossaryTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th style="width: 8%">ID</th>
+                                <th style="width: 22%">名词</th>
+                                <th style="width: 55%">释义</th>
+                                <th style="width: 15%">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="glossaryBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- /tab-glossary -->
     </div>
 
     <div class="drawer-overlay" id="drawerOverlay"></div>
@@ -615,16 +662,206 @@
         </div>
     </div>
 
+    <div class="drawer-overlay" id="glossaryDrawerOverlay"></div>
+    <div class="drawer" id="glossaryEditDrawer">
+        <div class="drawer-header">
+            <h2>✏️ 编辑业务名词</h2>
+            <button class="close-drawer" id="closeGlossaryDrawerBtn">×</button>
+        </div>
+        <div class="drawer-body">
+            <div id="glossaryDrawerMessage"></div>
+            <div class="current-id-badge" id="currentGlossaryIdBadge">正在编辑 ID: --</div>
+            <div class="drawer-section">
+                <label>业务名词 <span style="color: red;">*</span></label>
+                <input type="text" id="drawerTerm" placeholder="例如：扩科">
+            </div>
+            <div class="drawer-section">
+                <label>释义 <span style="color: red;">*</span></label>
+                <textarea id="drawerDefinition" placeholder="详细说明判定逻辑/计算方式"></textarea>
+            </div>
+        </div>
+        <div class="drawer-footer">
+            <button class="btn btn-secondary" id="cancelGlossaryDrawerBtn">取消</button>
+            <button class="btn btn-success" id="saveGlossaryDrawerBtn">💾 保存修改</button>
+        </div>
+    </div>
+
     <script>
         let currentEditId = null;
+        let currentGlossaryEditId = null;
         let allKnowledgeData = [];
+        let allGlossaryData = [];
         let currentFilter = 'all';
         let currentSearchTerm = '';
 
         window.addEventListener('load', () => {
             loadDatabases();
             bindSearchEvents();
+            bindTabEvents();
+            bindGlossaryDrawerEvents();
         });
+
+        function bindTabEvents() {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tab = btn.dataset.tab;
+                    document.querySelectorAll('.tab-btn').forEach(b => {
+                        b.classList.remove('active');
+                        b.style.background = '#f0f0f0';
+                        b.style.color = '#555';
+                    });
+                    btn.classList.add('active');
+                    btn.style.background = 'linear-gradient(135deg, #667eea, #764ba2)';
+                    btn.style.color = 'white';
+
+                    document.getElementById('tab-sql').style.display = tab === 'sql' ? '' : 'none';
+                    document.getElementById('tab-glossary').style.display = tab === 'glossary' ? '' : 'none';
+
+                    if (tab === 'glossary') {
+                        loadGlossary();
+                    }
+                });
+            });
+        }
+
+        function bindGlossaryDrawerEvents() {
+            document.getElementById('closeGlossaryDrawerBtn').addEventListener('click', closeGlossaryDrawer);
+            document.getElementById('cancelGlossaryDrawerBtn').addEventListener('click', closeGlossaryDrawer);
+            document.getElementById('glossaryDrawerOverlay').addEventListener('click', closeGlossaryDrawer);
+            document.getElementById('saveGlossaryDrawerBtn').addEventListener('click', saveGlossary);
+        }
+
+        async function loadGlossary() {
+            const dbName = document.getElementById('databaseSelect').value;
+            if (!dbName) return;
+            const loading = document.getElementById('glossaryLoadingIndicator');
+            const table = document.getElementById('glossaryTable');
+            const tbody = document.getElementById('glossaryBody');
+
+            loading.style.display = 'block';
+            table.style.display = 'none';
+            tbody.innerHTML = '';
+
+            try {
+                const r = await fetch(`/knowledge/api/glossary/list?db_name=${encodeURIComponent(dbName)}`);
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.error || '加载失败');
+
+                allGlossaryData = data.glossary || [];
+                if (allGlossaryData.length === 0) {
+                    loading.innerHTML = '<div class="empty-state">📭 暂无业务名词，请先添加</div>';
+                    return;
+                }
+
+                allGlossaryData.forEach(item => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${item.id}</td>
+                        <td><strong>${escapeHtml(item.term)}</strong></td>
+                        <td style="white-space: pre-wrap;">${escapeHtml(item.definition)}</td>
+                        <td>
+                            <button class="edit-btn" onclick="openGlossaryEdit(${item.id})">✏️ 编辑</button>
+                            <button class="delete-btn" onclick="deleteGlossary(${item.id})">🗑️ 删除</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+                loading.style.display = 'none';
+                table.style.display = 'table';
+            } catch (e) {
+                loading.innerHTML = `<div class="empty-state" style="color:#c00;">加载失败: ${e.message}</div>`;
+            }
+        }
+
+        async function addGlossary(event) {
+            event.preventDefault();
+            const dbName = document.getElementById('databaseSelect').value;
+            const term = document.getElementById('newTerm').value.trim();
+            const definition = document.getElementById('newDefinition').value.trim();
+            const messageDiv = document.getElementById('addGlossaryMessage');
+
+            if (!dbName) { showMessage(messageDiv, '请先选择数据库', 'error'); return; }
+
+            try {
+                const r = await fetch('/knowledge/api/glossary/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ db_name: dbName, term, definition })
+                });
+                const data = await r.json();
+                if (r.ok) {
+                    showMessage(messageDiv, '✅ 添加成功！', 'success');
+                    document.getElementById('addGlossaryForm').reset();
+                    loadGlossary();
+                } else {
+                    showMessage(messageDiv, '❌ 添加失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showMessage(messageDiv, '❌ 请求失败: ' + e.message, 'error');
+            }
+        }
+
+        function openGlossaryEdit(id) {
+            const item = allGlossaryData.find(x => x.id === id);
+            if (!item) return;
+            currentGlossaryEditId = id;
+            document.getElementById('currentGlossaryIdBadge').textContent = '正在编辑 ID: ' + id;
+            document.getElementById('drawerTerm').value = item.term;
+            document.getElementById('drawerDefinition').value = item.definition;
+            document.getElementById('glossaryEditDrawer').classList.add('open');
+            document.getElementById('glossaryDrawerOverlay').classList.add('show');
+        }
+
+        function closeGlossaryDrawer() {
+            document.getElementById('glossaryEditDrawer').classList.remove('open');
+            document.getElementById('glossaryDrawerOverlay').classList.remove('show');
+            currentGlossaryEditId = null;
+        }
+
+        async function saveGlossary() {
+            if (!currentGlossaryEditId) return;
+            const dbName = document.getElementById('databaseSelect').value;
+            const term = document.getElementById('drawerTerm').value.trim();
+            const definition = document.getElementById('drawerDefinition').value.trim();
+            const messageDiv = document.getElementById('glossaryDrawerMessage');
+
+            if (!term || !definition) { showMessage(messageDiv, '名词和释义都不能为空', 'error'); return; }
+
+            try {
+                const r = await fetch(`/knowledge/api/glossary/update/${currentGlossaryEditId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ db_name: dbName, term, definition })
+                });
+                const data = await r.json();
+                if (r.ok) {
+                    showMessage(messageDiv, '✅ 保存成功！', 'success');
+                    setTimeout(() => { closeGlossaryDrawer(); loadGlossary(); }, 600);
+                } else {
+                    showMessage(messageDiv, '❌ 保存失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showMessage(messageDiv, '❌ 请求失败: ' + e.message, 'error');
+            }
+        }
+
+        async function deleteGlossary(id) {
+            if (!confirm(`确定删除该业务名词吗？`)) return;
+            const dbName = document.getElementById('databaseSelect').value;
+            try {
+                const r = await fetch(`/knowledge/api/glossary/delete/${id}?db_name=${encodeURIComponent(dbName)}`, {
+                    method: 'DELETE'
+                });
+                if (r.ok) {
+                    loadGlossary();
+                } else {
+                    const data = await r.json();
+                    alert('删除失败: ' + (data.error || '未知'));
+                }
+            } catch (e) {
+                alert('请求失败: ' + e.message);
+            }
+        }
 
         function bindSearchEvents() {
             const searchInput = document.getElementById('searchInput');
