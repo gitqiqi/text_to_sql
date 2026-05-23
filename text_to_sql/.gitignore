@@ -1,0 +1,33 @@
+# 环境变量和敏感信息
+.env
+*.env
+knowledge_meta.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境（在 text_to_sql 子目录下的虚拟环境）
+text_to_sql/text_to_sql/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+.ipynb_checkpoints/
+
+# 项目缓存
+cache/
+
+# 构建产物
+*.egg-info/
+dist/
+build/
+
+# 系统文件
+.DS_Store
+Thumbs.db

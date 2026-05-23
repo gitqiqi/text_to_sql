@@ -1,0 +1,1431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自然语言转SQL查询系统</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Arial', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 16px 20px;
+        }
+
+        .main-header {
+            text-align: center;
+            margin-bottom: 16px;
+        }
+
+        .main-header h1 {
+            color: white;
+            font-size: 1.8rem;
+            margin-bottom: 4px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .main-header p {
+            color: rgba(255,255,255,0.9);
+            font-size: 0.9rem;
+            margin: 0;
+        }
+
+        .database-selector {
+            background: white;
+            border-radius: 16px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+
+        .database-selector-row {
+            display: flex;
+            gap: 16px;
+            align-items: flex-end;
+        }
+
+        .selector-group {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .selector-group.flex-2 {
+            flex: 2;
+        }
+
+        .database-selector label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .database-selector select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .database-selector select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .database-description {
+            color: #666;
+            font-size: 12px;
+            margin-top: 6px;
+        }
+
+        .kb-status {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 8px 12px;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #555;
+            border-left: 3px solid #667eea;
+            white-space: pre-line;
+        }
+
+        .kb-management-btn {
+            white-space: nowrap;
+            padding: 10px 16px;
+            background: #8b5cf6;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            margin: 0;
+            height: 42px;
+        }
+
+        .multi-select-container {
+            position: relative;
+        }
+
+        .multi-select-display {
+            width: 100%;
+            min-height: 42px;
+            padding: 8px 36px 8px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            background: white;
+            cursor: pointer;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            align-items: center;
+            font-size: 13px;
+            transition: border-color 0.2s;
+            position: relative;
+        }
+
+        .multi-select-display:hover {
+            border-color: #c0c0c0;
+        }
+
+        .multi-select-display.open {
+            border-color: #667eea;
+        }
+
+        .multi-select-display::after {
+            content: '▾';
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #999;
+            font-size: 12px;
+        }
+
+        .multi-select-tag {
+            background: #e0e7ff;
+            color: #4338ca;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .multi-select-tag-remove {
+            cursor: pointer;
+            color: #6366f1;
+            font-weight: bold;
+            line-height: 1;
+        }
+
+        .multi-select-tag-remove:hover {
+            color: #c00;
+        }
+
+        .multi-select-placeholder {
+            color: #999;
+        }
+
+        .multi-select-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+            max-height: 280px;
+            overflow-y: auto;
+            z-index: 100;
+            display: none;
+        }
+
+        .multi-select-dropdown.show {
+            display: block;
+        }
+
+        .multi-select-option {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            transition: background 0.15s;
+        }
+
+        .multi-select-option:hover {
+            background: #f5f5ff;
+        }
+
+        .multi-select-option input[type="checkbox"] {
+            margin: 0;
+            cursor: pointer;
+        }
+
+        .multi-select-option.all-option {
+            border-bottom: 1px solid #f0f0f0;
+            font-weight: 600;
+            color: #4338ca;
+        }
+
+        .main-content {
+            display: flex;
+            gap: 0;
+            position: relative;
+            min-height: 600px;
+        }
+
+        .content-main {
+            flex: 1;
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+            margin-right: 0;
+        }
+
+        .ai-sidebar {
+            position: fixed;
+            right: 0;
+            top: 0;
+            height: 100vh;
+            width: 0;
+            background: white;
+            box-shadow: -4px 0 20px rgba(0,0,0,0.1);
+            transition: width 0.3s ease;
+            z-index: 1000;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ai-sidebar.open {
+            width: 520px;
+        }
+
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 2px solid #f0f0f0;
+            background: white;
+        }
+
+        .sidebar-header h2 {
+            margin: 0;
+            font-size: 1.3rem;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sidebar-header h2 .badge {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 20px;
+        }
+
+        .close-sidebar {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+            padding: 0;
+            margin: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .close-sidebar:hover {
+            background: #f0f0f0;
+            color: #333;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .open-sidebar-btn {
+            position: fixed;
+            right: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            width: 48px;
+            height: 80px;
+            border-radius: 24px 0 0 24px;
+            cursor: pointer;
+            z-index: 999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 20px;
+            box-shadow: -2px 4px 12px rgba(0,0,0,0.15);
+            transition: all 0.3s ease;
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            font-weight: 600;
+            letter-spacing: 4px;
+        }
+
+        .open-sidebar-btn:hover {
+            right: 15px;
+            background: linear-gradient(135deg, #5a67d8, #6b46a0);
+            width: 52px;
+        }
+
+        .sidebar-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 998;
+            display: none;
+        }
+
+        .sidebar-overlay.show {
+            display: block;
+        }
+
+        textarea, input[type="text"] {
+            width: 100%;
+            padding: 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: all 0.3s ease;
+            resize: vertical;
+        }
+
+        textarea:focus, input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            min-height: 200px;
+            font-family: 'Courier New', monospace;
+        }
+
+        #nlQuery {
+            min-height: 100px;
+            font-family: inherit;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin-top: 12px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 12px;
+            margin-top: 0;
+            margin-left: 8px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .loading:after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            margin-left: 8px;
+            border: 2px solid #667eea;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .sql-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 14px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            border-radius: 8px;
+            margin: 12px 0;
+        }
+
+        .result-section {
+            margin-top: 20px;
+        }
+
+        .result-section h3 {
+            font-size: 16px;
+            margin-bottom: 10px;
+            color: #555;
+        }
+
+        .result-box {
+            background: #f8f9fa;
+            padding: 16px;
+            border-radius: 12px;
+            margin-top: 12px;
+            overflow-x: auto;
+        }
+
+        .error-box {
+            background: #fee;
+            color: #c00;
+            border-left: 4px solid #c00;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            border: 1px solid #e0e0e0;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+
+        tr:hover {
+            background: #f5f5f5;
+        }
+
+        .bottom-result {
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            margin-top: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+
+        .bottom-result h2 {
+            margin-top: 0;
+            margin-bottom: 16px;
+            color: #333;
+            font-size: 1.3rem;
+        }
+
+        .shared-result-summary {
+            background: #e8f0fe;
+            padding: 10px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: #667eea;
+        }
+
+        .sql-query-section {
+            margin-bottom: 24px;
+        }
+
+        .info-badge {
+            background: #e0e7ff;
+            color: #4338ca;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        .config-group {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 12px;
+            margin: 12px 0;
+        }
+
+        .strategy-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .strategy-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .strategy-option:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+
+        .strategy-option.selected {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+
+        .strategy-option input {
+            margin-top: 2px;
+        }
+
+        .strategy-content {
+            flex: 1;
+        }
+
+        .strategy-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .strategy-desc {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .table-search-container {
+            position: relative;
+            margin-top: 12px;
+        }
+
+        .table-search-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .table-search-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .table-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 12px 12px;
+            max-height: 250px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .table-suggestions.show {
+            display: block;
+        }
+
+        .suggestion-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .suggestion-item:hover {
+            background: #f0f0ff;
+        }
+
+        .selected-table-info {
+            background: #e8f0fe;
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-top: 8px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .selected-table-info.show {
+            display: block;
+        }
+
+        .clear-table-btn {
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 16px;
+            margin-left: 8px;
+            padding: 0 4px;
+        }
+
+        .clear-table-btn:hover {
+            color: #c00;
+            transform: none;
+            box-shadow: none;
+        }
+
+        @media (max-width: 768px) {
+            .ai-sidebar.open {
+                width: 100%;
+            }
+            
+            .open-sidebar-btn {
+                width: 40px;
+                height: 60px;
+                font-size: 12px;
+                right: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="main-header">
+            <h1>🤖 自然语言转SQL查询系统</h1>
+            <p>用自然语言提问，AI 自动生成 SQL 并执行查询 | 支持向量检索、指定表、全量检索三种模式</p>
+        </div>
+
+        <div class="database-selector">
+            <div class="database-selector-row">
+                <select id="databaseSelect" style="display: none;">
+                    <option value="">正在加载...</option>
+                </select>
+                <div class="selector-group" style="flex: 1;">
+                    <label>🏷️ Schema (可多选)</label>
+                    <div class="multi-select-container" id="schemaMultiSelect">
+                        <div class="multi-select-display" id="schemaDisplay">
+                            <span class="multi-select-placeholder">全部 Schema</span>
+                        </div>
+                        <div class="multi-select-dropdown" id="schemaDropdown"></div>
+                    </div>
+                </div>
+                <button id="kbManagementBtn" class="kb-management-btn">📚 知识库</button>
+            </div>
+            <div class="database-description" id="databaseDescription" style="display: none;"></div>
+            <div id="kbStatus" class="kb-status" style="display: none;"></div>
+        </div>
+
+        <div class="main-content">
+            <div class="content-main">
+                <div class="sql-query-section">
+                    <h2 style="margin-top: 0; margin-bottom: 16px;">📝 跑数查询</h2>
+                    <p style="color: #666; margin-bottom: 16px;">直接输入 SQL 查询并执行，适合快速跑数分析。</p>
+                    <textarea id="sqlQuery" placeholder="请输入 SQL 查询，例如：SELECT * FROM orders LIMIT 100"></textarea>
+                    <button id="executeSqlBtn">▶ 执行 SQL 查询</button>
+                    <div class="loading" id="sqlLoadingIndicator">正在执行 SQL</div>
+                </div>
+            </div>
+
+            <div class="ai-sidebar" id="aiSidebar">
+                <div class="sidebar-header">
+                    <h2>✨ AI SQL <span class="badge">智能生成</span></h2>
+                    <button class="close-sidebar" id="closeSidebar">✕</button>
+                </div>
+                <div class="sidebar-content">
+                    <p style="color: #666; margin-bottom: 16px;">用自然语言提问，AI 会自动生成 SQL 并执行查询。</p>
+                    <textarea id="nlQuery" placeholder="请输入您的自然语言查询，例如：查询最近一个月销量最高的10本书"></textarea>
+                    
+                    <div style="margin: 16px 0;">
+                        <label style="font-weight: 600; color: #333; display: block; margin-bottom: 12px;">🔍 检索策略</label>
+                        
+                        <div class="strategy-group">
+                            <div class="strategy-option" data-strategy="vector">
+                                <input type="radio" name="searchStrategy" id="strategyVector" value="vector" checked>
+                                <div class="strategy-content">
+                                    <div class="strategy-title">📊 向量检索</div>
+                                    <div class="strategy-desc">根据自然语言语义自动匹配最相关的表（推荐）</div>
+                                </div>
+                            </div>
+                            
+                            <div class="strategy-option" data-strategy="exact">
+                                <input type="radio" name="searchStrategy" id="strategyExact" value="exact">
+                                <div class="strategy-content">
+                                    <div class="strategy-title">🎯 指定表检索</div>
+                                    <div class="strategy-desc">手动选择或搜索表名，只使用单个表的schema</div>
+                                </div>
+                            </div>
+                            
+                            <div class="strategy-option" data-strategy="full">
+                                <input type="radio" name="searchStrategy" id="strategyFull" value="full">
+                                <div class="strategy-content">
+                                    <div class="strategy-title">🌐 全量检索</div>
+                                    <div class="strategy-desc">不使用向量筛选，将所有表的schema完整传递给AI（表多时可能影响性能）</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="vectorConfig" class="config-group">
+                            <label>
+                                📊 返回相关表数量：
+                                <input type="number" id="topKTables" value="10" min="1" max="20" step="1" style="width: 70px;">
+                                <span class="info-badge">推荐3-5</span>
+                            </label>
+                        </div>
+
+                        <div id="exactTableConfig" style="display: none;">
+                            <label style="font-weight: 600; color: #333; display: block; margin-bottom: 8px;">📋 搜索并选择表</label>
+                            <div class="table-search-container">
+                                <input type="text" id="tableSearchInput" class="table-search-input" placeholder="输入表名进行模糊搜索，例如: user、order">
+                                <div id="tableSuggestions" class="table-suggestions"></div>
+                            </div>
+                            <div id="selectedTableInfo" class="selected-table-info">
+                                <span>✅ 已选择: <strong id="selectedTableName"></strong></span>
+                                <button type="button" id="clearTableBtn" class="clear-table-btn" title="清除选择">✕</button>
+                            </div>
+                            <div style="font-size: 12px; color: #666; margin-top: 8px;">
+                                <span>💡 提示：输入关键字会自动模糊匹配表名，点击选择即可</span>
+                            </div>
+                        </div>
+
+                        <div id="fullConfig" class="config-group" style="display: none;">
+                            <div style="font-size: 13px; color: #666;">
+                                ⚠️ 全量检索会将数据库所有表的schema传递给AI，表数量较多时可能影响响应速度。
+                            </div>
+                        </div>
+
+                        <details style="margin-top: 12px;">
+                            <summary style="cursor: pointer; color: #667eea; font-size: 13px;">⚙️ 高级选项</summary>
+                            <div class="config-group" style="margin-top: 8px;">
+                                <label style="display: flex; align-items: center; gap: 8px;">
+                                    <input type="checkbox" id="fuzzyMatchCheckbox" checked>
+                                    <span>启用降级策略（指定表未找到时自动使用向量检索）</span>
+                                </label>
+                            </div>
+                        </details>
+                    </div>
+                    
+                    <button id="submitBtn">🤖 AI 生成 SQL 并执行</button>
+                    <div class="loading" id="aiLoadingIndicator">AI 正在思考</div>
+
+                    <div class="result-section">
+                        <h3>📄 生成的 SQL</h3>
+                        <div class="sql-box" id="generatedSQL">等待输入...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-overlay" id="sidebarOverlay"></div>
+        </div>
+
+        <button class="open-sidebar-btn" id="openSidebarBtn">
+            AI<br>SQL
+        </button>
+
+        <div class="bottom-result">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h2 style="margin: 0;">📊 查询结果</h2>
+                <button id="exportCsvBtn" class="btn-small" style="display: none;">📥 导出 CSV</button>
+            </div>
+            <div id="sharedResultSummary" class="shared-result-summary" style="display: none;"></div>
+            <div id="sharedResultData"></div>
+            <div id="sharedResultError" class="result-box error-box" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        let allTables = [];
+        let selectedTable = null;
+        let searchTimeout = null;
+        let currentKnowledgeCount = 0;
+        let availableSchemas = [];
+        let selectedSchemas = new Set();
+        let lastQueryResult = null;
+        let lastQuerySource = '';
+
+        function getSelectedSchemas() {
+            return Array.from(selectedSchemas);
+        }
+
+        function getSelectedSchema() {
+            // 兼容旧调用：返回逗号分隔字符串
+            return getSelectedSchemas().join(',');
+        }
+
+        function renderSchemaDisplay() {
+            const display = document.getElementById('schemaDisplay');
+            const schemas = getSelectedSchemas();
+            if (schemas.length === 0) {
+                display.innerHTML = '<span class="multi-select-placeholder">全部 Schema</span>';
+                return;
+            }
+            display.innerHTML = schemas.map(s => `
+                <span class="multi-select-tag">
+                    ${escapeHtml(s)}
+                    <span class="multi-select-tag-remove" data-schema="${escapeHtml(s)}">✕</span>
+                </span>
+            `).join('');
+            display.querySelectorAll('.multi-select-tag-remove').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    selectedSchemas.delete(el.dataset.schema);
+                    renderSchemaDisplay();
+                    renderSchemaDropdown();
+                    onSchemaChange();
+                });
+            });
+        }
+
+        function renderSchemaDropdown() {
+            const dropdown = document.getElementById('schemaDropdown');
+            const allSelected = availableSchemas.length > 0 && selectedSchemas.size === availableSchemas.length;
+            const html = [];
+            html.push(`
+                <div class="multi-select-option all-option" data-action="toggle-all">
+                    <input type="checkbox" ${allSelected ? 'checked' : ''}>
+                    <span>${allSelected ? '取消全选' : '全选'}</span>
+                </div>
+            `);
+            availableSchemas.forEach(s => {
+                const checked = selectedSchemas.has(s);
+                html.push(`
+                    <div class="multi-select-option" data-schema="${escapeHtml(s)}">
+                        <input type="checkbox" ${checked ? 'checked' : ''}>
+                        <span>${escapeHtml(s)}</span>
+                    </div>
+                `);
+            });
+            dropdown.innerHTML = html.join('');
+
+            dropdown.querySelector('[data-action="toggle-all"]').addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (allSelected) {
+                    selectedSchemas.clear();
+                } else {
+                    availableSchemas.forEach(s => selectedSchemas.add(s));
+                }
+                renderSchemaDisplay();
+                renderSchemaDropdown();
+                onSchemaChange();
+            });
+
+            dropdown.querySelectorAll('.multi-select-option[data-schema]').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const s = el.dataset.schema;
+                    if (selectedSchemas.has(s)) {
+                        selectedSchemas.delete(s);
+                    } else {
+                        selectedSchemas.add(s);
+                    }
+                    renderSchemaDisplay();
+                    renderSchemaDropdown();
+                    onSchemaChange();
+                });
+            });
+        }
+
+        function onSchemaChange() {
+            loadDbTables();
+            selectedTable = null;
+            selectedTableInfo?.classList.remove('show');
+            if (tableSearchInput) tableSearchInput.value = '';
+        }
+
+        document.getElementById('schemaDisplay').addEventListener('click', () => {
+            const dd = document.getElementById('schemaDropdown');
+            const display = document.getElementById('schemaDisplay');
+            dd.classList.toggle('show');
+            display.classList.toggle('open');
+        });
+
+        document.addEventListener('click', (e) => {
+            const container = document.getElementById('schemaMultiSelect');
+            if (container && !container.contains(e.target)) {
+                document.getElementById('schemaDropdown').classList.remove('show');
+                document.getElementById('schemaDisplay').classList.remove('open');
+            }
+        });
+
+        function escapeCsvField(value) {
+            if (value === null || value === undefined) return '';
+            let str = typeof value === 'object' ? JSON.stringify(value) : String(value);
+            if (/[",\n\r]/.test(str)) {
+                str = '"' + str.replace(/"/g, '""') + '"';
+            }
+            return str;
+        }
+
+        function exportToCsv(data, filename) {
+            if (!data || data.length === 0) {
+                alert('无数据可导出');
+                return;
+            }
+            const columns = Object.keys(data[0]);
+            const lines = [columns.map(escapeCsvField).join(',')];
+            data.forEach(row => {
+                lines.push(columns.map(col => escapeCsvField(row[col])).join(','));
+            });
+            // 加 BOM 让 Excel 正确识别 UTF-8 中文
+            const csv = '﻿' + lines.join('\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        document.getElementById('exportCsvBtn').addEventListener('click', () => {
+            if (!lastQueryResult || lastQueryResult.length === 0) {
+                alert('暂无可导出的数据');
+                return;
+            }
+            const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const prefix = lastQuerySource || 'query';
+            exportToCsv(lastQueryResult, `${prefix}_${ts}.csv`);
+        });
+
+        function goToKnowledgeManagement() {
+            window.location.href = '/knowledge/management';
+        }
+
+        const sidebar = document.getElementById('aiSidebar');
+        const overlay = document.getElementById('sidebarOverlay');
+        const openBtn = document.getElementById('openSidebarBtn');
+        const closeBtn = document.getElementById('closeSidebar');
+
+        function openSidebar() {
+            sidebar.classList.add('open');
+            overlay.classList.add('show');
+            document.body.classList.add('sidebar-open');
+        }
+
+        function closeSidebar() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('show');
+            document.body.classList.remove('sidebar-open');
+        }
+
+        openBtn.addEventListener('click', openSidebar);
+        closeBtn.addEventListener('click', closeSidebar);
+        overlay.addEventListener('click', closeSidebar);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && sidebar.classList.contains('open')) {
+                closeSidebar();
+            }
+        });
+
+        const strategyOptions = document.querySelectorAll('.strategy-option');
+        strategyOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                const radio = option.querySelector('input[type="radio"]');
+                radio.checked = true;
+                radio.dispatchEvent(new Event('change'));
+            });
+        });
+
+        document.getElementById('strategyVector').addEventListener('change', () => {
+            document.getElementById('vectorConfig').style.display = 'block';
+            document.getElementById('exactTableConfig').style.display = 'none';
+            document.getElementById('fullConfig').style.display = 'none';
+            strategyOptions.forEach(opt => opt.classList.remove('selected'));
+            document.querySelector('[data-strategy="vector"]').classList.add('selected');
+        });
+
+        document.getElementById('strategyExact').addEventListener('change', () => {
+            document.getElementById('vectorConfig').style.display = 'none';
+            document.getElementById('exactTableConfig').style.display = 'block';
+            document.getElementById('fullConfig').style.display = 'none';
+            strategyOptions.forEach(opt => opt.classList.remove('selected'));
+            document.querySelector('[data-strategy="exact"]').classList.add('selected');
+        });
+
+        document.getElementById('strategyFull').addEventListener('change', () => {
+            document.getElementById('vectorConfig').style.display = 'none';
+            document.getElementById('exactTableConfig').style.display = 'none';
+            document.getElementById('fullConfig').style.display = 'block';
+            strategyOptions.forEach(opt => opt.classList.remove('selected'));
+            document.querySelector('[data-strategy="full"]').classList.add('selected');
+        });
+
+        const tableSearchInput = document.getElementById('tableSearchInput');
+        const tableSuggestions = document.getElementById('tableSuggestions');
+        const selectedTableInfo = document.getElementById('selectedTableInfo');
+        const selectedTableName = document.getElementById('selectedTableName');
+
+        document.getElementById('clearTableBtn').addEventListener('click', () => {
+            selectedTable = null;
+            selectedTableInfo.classList.remove('show');
+            tableSearchInput.value = '';
+            tableSuggestions.classList.remove('show');
+        });
+
+        function searchTables(keyword) {
+            if (!keyword.trim()) {
+                tableSuggestions.classList.remove('show');
+                return;
+            }
+
+            let pattern = keyword.toLowerCase();
+            let matchedTables = allTables.filter(table => {
+                const tableName = table.table_name.toLowerCase();
+                const fullName = table.schema ? `${table.schema}.${table.table_name}`.toLowerCase() : table.table_name.toLowerCase();
+                return tableName.includes(pattern) || fullName.includes(pattern);
+            });
+
+            matchedTables = matchedTables.slice(0, 10);
+
+            if (matchedTables.length === 0) {
+                tableSuggestions.innerHTML = '<div class="suggestion-item" style="color: #999;">未找到匹配的表</div>';
+                tableSuggestions.classList.add('show');
+                return;
+            }
+
+            tableSuggestions.innerHTML = matchedTables.map(table => `
+                <div class="suggestion-item" data-table-name="${table.table_name}" data-schema="${table.schema || ''}" data-columns='${JSON.stringify(table.columns || [])}'>
+                    <div>
+                        <span class="suggestion-table-name">${escapeHtml(table.schema ? `${table.schema}.${table.table_name}` : table.table_name)}</span>
+                        <span class="suggestion-schema" style="margin-left: 8px; font-size: 11px; color: #999;">${table.column_count || 0}个字段</span>
+                    </div>
+                    <div class="suggestion-columns" style="font-size: 11px; color: #666; margin-top: 4px;">${escapeHtml((table.columns || []).slice(0, 5).join(', '))}${(table.columns || []).length > 5 ? '...' : ''}</div>
+                </div>
+            `).join('');
+
+            document.querySelectorAll('.suggestion-item[data-table-name]').forEach(item => {
+                item.addEventListener('click', () => {
+                    const tableName = item.dataset.tableName;
+                    const schema = item.dataset.schema;
+                    selectedTable = schema ? `${schema}.${tableName}` : tableName;
+                    selectedTableName.textContent = selectedTable;
+                    selectedTableInfo.classList.add('show');
+                    tableSearchInput.value = selectedTable;
+                    tableSuggestions.classList.remove('show');
+                });
+            });
+
+            tableSuggestions.classList.add('show');
+        }
+
+        tableSearchInput.addEventListener('input', (e) => {
+            if (searchTimeout) clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                searchTables(e.target.value);
+            }, 300);
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!tableSearchInput?.contains(e.target) && !tableSuggestions?.contains(e.target)) {
+                tableSuggestions?.classList.remove('show');
+            }
+        });
+
+        window.addEventListener('load', async () => {
+            await loadDatabases();
+            document.querySelector('[data-strategy="vector"]').classList.add('selected');
+        });
+
+        async function loadDatabases() {
+            try {
+                const response = await fetch('/get_databases');
+                const data = await response.json();
+
+                if (response.ok && data.databases) {
+                    const select = document.getElementById('databaseSelect');
+                    const description = document.getElementById('databaseDescription');
+
+                    select.innerHTML = '';
+                    data.databases.forEach(db => {
+                        const option = document.createElement('option');
+                        option.value = db.id;
+                        option.textContent = db.name;
+                        select.appendChild(option);
+                    });
+
+                    if (data.databases.length > 0) {
+                        select.value = data.databases[0].id;
+                        description.textContent = data.databases[0].description;
+                    }
+
+                    select.addEventListener('change', () => {
+                        const selected = data.databases.find(db => db.id === select.value);
+                        if (selected) description.textContent = selected.description;
+                        loadSchemas();
+                        loadKbStatus();
+                        selectedTable = null;
+                        selectedTableInfo?.classList.remove('show');
+                        if (tableSearchInput) tableSearchInput.value = '';
+                    });
+
+                    await loadSchemas();
+                    await loadKbStatus();
+                }
+            } catch (error) {
+                console.error('加载数据库失败:', error);
+            }
+        }
+
+        async function loadSchemas() {
+            const dbSelect = document.getElementById('databaseSelect');
+            if (!dbSelect) return;
+
+            try {
+                const response = await fetch(`/api/db_schemas?db_name=${encodeURIComponent(dbSelect.value)}`);
+                const data = await response.json();
+                if (response.ok && Array.isArray(data.schemas)) {
+                    availableSchemas = data.schemas;
+                    selectedSchemas = new Set();
+                    // 默认选中 bi（如果存在）
+                    if (availableSchemas.includes('bi')) {
+                        selectedSchemas.add('bi');
+                    }
+                    renderSchemaDisplay();
+                    renderSchemaDropdown();
+                    await loadDbTables();
+                }
+            } catch (error) {
+                console.error('加载 schema 失败:', error);
+            }
+        }
+
+        async function loadKbStatus() {
+            const select = document.getElementById('databaseSelect');
+            const box = document.getElementById('kbStatus');
+            const db = select?.value;
+            if (!db) return;
+            
+            box.style.display = 'block';
+            box.textContent = '正在加载知识库状态...';
+            
+            try {
+                const r = await fetch(`/api/knowledge/status?db_name=${encodeURIComponent(db)}`);
+                const j = await r.json();
+                if (!r.ok) {
+                    box.textContent = j.error || '加载失败';
+                    return;
+                }
+                currentKnowledgeCount = j.row_count || 0;
+                const lines = [
+                    `数据源：${j.db_name}`,
+                    `知识库条目数：${j.row_count || 0}`,
+                    `存储方式：数据库 (knowledge.db_knowledge)`
+                ].filter(Boolean);
+                box.textContent = lines.join('\n');
+            } catch (e) {
+                box.textContent = '请求失败：' + e.message;
+            }
+        }
+
+        async function loadDbTables() {
+            const select = document.getElementById('databaseSelect');
+            if (!select) return;
+
+            let url = `/api/db_tables?db_name=${encodeURIComponent(select.value)}`;
+            const schemas = getSelectedSchemas();
+            if (schemas.length > 0) {
+                url += `&schema_name=${encodeURIComponent(schemas.join(','))}`;
+            }
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (response.ok && Array.isArray(data.tables)) {
+                    allTables = data.tables;
+                    console.log(`加载了 ${allTables.length} 个表 (schema: ${schemas.length > 0 ? schemas.join(',') : '全部'})`);
+                } else {
+                    allTables = [];
+                }
+            } catch (error) {
+                console.error('加载表失败:', error);
+                allTables = [];
+            }
+        }
+
+        document.getElementById('executeSqlBtn').addEventListener('click', async () => {
+            const sql = document.getElementById('sqlQuery').value.trim();
+            const db = document.getElementById('databaseSelect').value;
+            const loading = document.getElementById('sqlLoadingIndicator');
+            const resultData = document.getElementById('sharedResultData');
+            const resultError = document.getElementById('sharedResultError');
+            const resultSummary = document.getElementById('sharedResultSummary');
+
+            if (!sql) { alert('请输入 SQL'); return; }
+            if (!db) { alert('请选择数据库'); return; }
+
+            loading.style.display = 'block';
+            resultData.innerHTML = '';
+            resultError.style.display = 'none';
+            resultSummary.style.display = 'none';
+
+            try {
+                const response = await fetch('/execute_sql', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sql, db_name: db })
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultSummary.textContent = `来源：直接 SQL 查询（${db}）`;
+                    resultSummary.style.display = 'block';
+                    if (data.sql_result && data.sql_result.length > 0) {
+                        const columns = Object.keys(data.sql_result[0]);
+                        resultData.innerHTML = createTable(data.sql_result, columns);
+                        lastQueryResult = data.sql_result;
+                        lastQuerySource = 'sql';
+                        document.getElementById('exportCsvBtn').style.display = 'inline-block';
+                    } else {
+                        resultData.innerHTML = '<div style="color: #666;">查询成功，但未返回数据</div>';
+                        lastQueryResult = null;
+                        document.getElementById('exportCsvBtn').style.display = 'none';
+                    }
+                } else {
+                    resultError.textContent = data.error || '执行失败';
+                    resultError.style.display = 'block';
+                    document.getElementById('exportCsvBtn').style.display = 'none';
+                }
+            } catch (error) {
+                resultError.textContent = '请求出错: ' + error.message;
+                resultError.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+
+        document.getElementById('submitBtn').addEventListener('click', async () => {
+            const query = document.getElementById('nlQuery').value.trim();
+            const db = document.getElementById('databaseSelect').value;
+            const loading = document.getElementById('aiLoadingIndicator');
+            const generatedSQL = document.getElementById('generatedSQL');
+            const resultData = document.getElementById('sharedResultData');
+            const resultError = document.getElementById('sharedResultError');
+            const resultSummary = document.getElementById('sharedResultSummary');
+            
+            const useVectorSearch = document.getElementById('strategyVector').checked;
+            const useFullTable = document.getElementById('strategyFull').checked;
+            const fuzzyMatch = document.getElementById('fuzzyMatchCheckbox').checked;
+            const topKTables = parseInt(document.getElementById('topKTables').value) || 10;
+            
+            let selectedTableValue = null;
+            if (document.getElementById('strategyExact').checked) {
+                if (!selectedTable && fuzzyMatch) {
+                    alert('请搜索并选择一个表');
+                    return;
+                }
+                selectedTableValue = selectedTable;
+            }
+
+            if (!query) { alert('请输入查询内容'); return; }
+            if (!db) { alert('请选择数据库'); return; }
+
+            loading.style.display = 'block';
+            generatedSQL.textContent = '生成中...';
+            resultData.innerHTML = '';
+            resultError.style.display = 'none';
+            resultSummary.style.display = 'none';
+
+            try {
+                const requestBody = {
+                    nl_query: query,
+                    db_name: db,
+                    schema_name: getSelectedSchema(),
+                    selected_table: useFullTable ? null : selectedTableValue,
+                    use_vector_search: useVectorSearch,
+                    top_k_tables: topKTables
+                };
+                
+                console.log('请求参数:', requestBody);
+                
+                const response = await fetch('/execute_nl_query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    generatedSQL.textContent = data.generated_sql || '未生成 SQL';
+                    
+                    let modeText = '';
+                    if (useFullTable) {
+                        modeText = '全量检索（使用所有表的schema）';
+                    } else if (useVectorSearch) {
+                        modeText = `向量检索（匹配前${topKTables}个相关表）`;
+                    } else {
+                        modeText = `指定表 "${selectedTableValue}" ${fuzzyMatch ? '' : '(精确匹配)'}`;
+                    }
+                    
+                    resultSummary.textContent = `来源：AI 生成 SQL（${db}，${modeText}）| 知识库条目：${currentKnowledgeCount}`;
+                    resultSummary.style.display = 'block';
+                    
+                    if (data.sql_result && data.sql_result.length > 0) {
+                        const columns = Object.keys(data.sql_result[0]);
+                        resultData.innerHTML = createTable(data.sql_result, columns);
+                        lastQueryResult = data.sql_result;
+                        lastQuerySource = 'ai_sql';
+                        document.getElementById('exportCsvBtn').style.display = 'inline-block';
+                    } else {
+                        resultData.innerHTML = '<div style="color: #666;">查询成功，但未返回数据</div>';
+                        lastQueryResult = null;
+                        document.getElementById('exportCsvBtn').style.display = 'none';
+                    }
+                } else {
+                    generatedSQL.textContent = '生成失败';
+                    resultError.textContent = data.error || '请求失败';
+                    resultError.style.display = 'block';
+                    document.getElementById('exportCsvBtn').style.display = 'none';
+                }
+            } catch (error) {
+                generatedSQL.textContent = '请求出错';
+                resultError.textContent = '请求出错: ' + error.message;
+                resultError.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+
+        function createTable(data, columns) {
+            if (!data || data.length === 0) {
+                return '<div style="color: #666;">无数据</div>';
+            }
+            
+            let html = '<div style="overflow-x: auto;"><table>';
+            html += '<thead><tr>';
+            columns.forEach(col => html += `<th>${escapeHtml(col)}</th>`);
+            html += '</thead><tbody>';
+            
+            data.forEach(row => {
+                html += '<tr>';
+                columns.forEach(col => {
+                    let val = row[col];
+                    if (val === null || val === undefined) val = 'NULL';
+                    if (typeof val === 'object') val = JSON.stringify(val);
+                    html += `<td title="${escapeHtml(String(val))}">${escapeHtml(String(val).substring(0, 200))}${String(val).length > 200 ? '...' : ''}</td>`;
+                });
+                html += '</tr>';
+            });
+            
+            html += '</tbody><tr></div>';
+            return html;
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+
+        document.getElementById('kbManagementBtn').addEventListener('click', goToKnowledgeManagement);
+    </script>
+</body>
+</html>
