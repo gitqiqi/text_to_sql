@@ -808,6 +808,7 @@
                     </div>
                     
                     <button id="submitBtn">🤖 AI 生成 SQL 并执行</button>
+                    <button id="cancelBtn" style="display: none; background-color: #d32f2f; color: white;">⛔ 停止查询</button>
                     <div class="loading" id="aiLoadingIndicator">AI 正在思考</div>
 
                     <div class="result-section">
@@ -1298,20 +1299,45 @@
             }
         });
 
+        let currentQueryAbortController = null;
+        let currentQueryRequestId = null;
+
+        document.getElementById('cancelBtn').addEventListener('click', async () => {
+            if (!currentQueryRequestId) return;
+            const reqId = currentQueryRequestId;
+            console.log('用户点击停止，request_id:', reqId);
+            // 1) 服务端：触发协作式取消（停止后续 LLM 批次/SQL 执行）
+            try {
+                await fetch('/cancel_query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: reqId })
+                });
+            } catch (e) {
+                console.warn('调用 /cancel_query 失败（忽略）:', e);
+            }
+            // 2) 前端：中断 fetch，立即解除等待
+            if (currentQueryAbortController) {
+                currentQueryAbortController.abort();
+            }
+        });
+
         document.getElementById('submitBtn').addEventListener('click', async () => {
             const query = document.getElementById('nlQuery').value.trim();
             const db = document.getElementById('databaseSelect').value;
             const loading = document.getElementById('aiLoadingIndicator');
+            const cancelBtn = document.getElementById('cancelBtn');
+            const submitBtn = document.getElementById('submitBtn');
             const generatedSQL = document.getElementById('generatedSQL');
             const resultData = document.getElementById('sharedResultData');
             const resultError = document.getElementById('sharedResultError');
             const resultSummary = document.getElementById('sharedResultSummary');
-            
+
             const useVectorSearch = document.getElementById('strategyVector').checked;
             const useFullTable = document.getElementById('strategyFull').checked;
             const fuzzyMatch = document.getElementById('fuzzyMatchCheckbox').checked;
             const topKTables = parseInt(document.getElementById('topKTables').value) || 10;
-            
+
             let selectedTableValue = null;
             if (document.getElementById('strategyExact').checked) {
                 if (!selectedTable && fuzzyMatch) {
@@ -1324,7 +1350,13 @@
             if (!query) { alert('请输入查询内容'); return; }
             if (!db) { alert('请选择数据库'); return; }
 
+            // 生成 request_id 并初始化 abort controller
+            currentQueryRequestId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random())).replace(/-/g, '');
+            currentQueryAbortController = new AbortController();
+
             loading.style.display = 'block';
+            cancelBtn.style.display = 'inline-block';
+            submitBtn.disabled = true;
             generatedSQL.textContent = '生成中...';
             resultData.innerHTML = '';
             resultError.style.display = 'none';
@@ -1332,6 +1364,7 @@
 
             try {
                 const requestBody = {
+                    request_id: currentQueryRequestId,
                     nl_query: query,
                     db_name: db,
                     schema_name: getSelectedSchema(),
@@ -1339,19 +1372,20 @@
                     use_vector_search: useVectorSearch,
                     top_k_tables: topKTables
                 };
-                
+
                 console.log('请求参数:', requestBody);
-                
+
                 const response = await fetch('/execute_nl_query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
+                    body: JSON.stringify(requestBody),
+                    signal: currentQueryAbortController.signal
                 });
                 const data = await response.json();
-                
+
                 if (response.ok) {
                     generatedSQL.textContent = data.generated_sql || '未生成 SQL';
-                    
+
                     let modeText = '';
                     if (useFullTable) {
                         modeText = '全量检索（使用所有表的schema）';
@@ -1360,10 +1394,10 @@
                     } else {
                         modeText = `指定表 "${selectedTableValue}" ${fuzzyMatch ? '' : '(精确匹配)'}`;
                     }
-                    
+
                     resultSummary.textContent = `来源：AI 生成 SQL（${db}，${modeText}）| 知识库条目：${currentKnowledgeCount}`;
                     resultSummary.style.display = 'block';
-                    
+
                     if (data.sql_result && data.sql_result.length > 0) {
                         const columns = Object.keys(data.sql_result[0]);
                         resultData.innerHTML = createTable(data.sql_result, columns);
@@ -1375,6 +1409,11 @@
                         lastQueryResult = null;
                         document.getElementById('exportCsvBtn').style.display = 'none';
                     }
+                } else if (response.status === 499 || data.status === 'cancelled') {
+                    generatedSQL.textContent = '已取消';
+                    resultError.textContent = '查询已取消';
+                    resultError.style.display = 'block';
+                    document.getElementById('exportCsvBtn').style.display = 'none';
                 } else {
                     generatedSQL.textContent = '生成失败';
                     resultError.textContent = data.error || '请求失败';
@@ -1382,11 +1421,21 @@
                     document.getElementById('exportCsvBtn').style.display = 'none';
                 }
             } catch (error) {
-                generatedSQL.textContent = '请求出错';
-                resultError.textContent = '请求出错: ' + error.message;
-                resultError.style.display = 'block';
+                if (error.name === 'AbortError') {
+                    generatedSQL.textContent = '已取消';
+                    resultError.textContent = '查询已取消';
+                    resultError.style.display = 'block';
+                } else {
+                    generatedSQL.textContent = '请求出错';
+                    resultError.textContent = '请求出错: ' + error.message;
+                    resultError.style.display = 'block';
+                }
             } finally {
                 loading.style.display = 'none';
+                cancelBtn.style.display = 'none';
+                submitBtn.disabled = false;
+                currentQueryAbortController = null;
+                currentQueryRequestId = null;
             }
         });
 

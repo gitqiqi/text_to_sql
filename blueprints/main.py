@@ -8,6 +8,7 @@ from core import (
     DatabaseManager, KnowledgeBase, SQLKnowledgeRepo, TextToSQLConverter,
     monitor_function, _nl_query_limiter,
 )
+from core.cancellation import registry as cancel_registry, CancelledError
 
 
 @main_bp.route('/')
@@ -97,13 +98,21 @@ def execute_sql():
 @main_bp.route('/execute_nl_query', methods=['POST'])
 def handle_nl_query():
     """处理自然语言查询"""
+    data = request.get_json() or {}
+    # 优先使用前端传的 request_id（用于取消），否则后端生成
+    client_request_id = (data.get('request_id') or '').strip() if isinstance(data.get('request_id'), str) else ''
+    if client_request_id:
+        token = cancel_registry.register_with_id(client_request_id)
+        request_id, cancel_token = client_request_id, token
+    else:
+        request_id, cancel_token = cancel_registry.create()
+
     try:
         # 限流检查
         if not _nl_query_limiter.allow():
             return jsonify({'error': '请求过于频繁，请稍后再试', 'status': 'error'}), 429
 
-        data = request.get_json()
-        if not data or 'nl_query' not in data:
+        if 'nl_query' not in data:
             return jsonify({'error': 'Missing nl_query'}), 400
 
         db_name = data.get('db_name')
@@ -122,6 +131,7 @@ def handle_nl_query():
 
         print(f"\n{'='*60}")
         print(f"📨 查询: {db_name} - {data['nl_query'][:100]}...")
+        print(f"   request_id: {request_id}")
         print(f"   向量检索: {use_vector_search}, 指定表: {selected_table}, schema: {schema_name}")
         print(f"{'='*60}")
 
@@ -133,19 +143,40 @@ def handle_nl_query():
             selected_table=selected_table,
             use_vector_search=use_vector_search,
             top_k_tables=top_k_tables,
-            schema_filter=schema_name
+            schema_filter=schema_name,
+            cancel_token=cancel_token,
         )
 
         elapsed = (time.time() - start_time) * 1000
         print(f"✅ 查询完成，总耗时: {elapsed:.2f} ms")
 
         return jsonify({
+            'request_id': request_id,
             'generated_sql': sql,
             'sql_result': result.to_dict(orient='records'),
             'status': 'success'
         })
+    except CancelledError as e:
+        print(f"⛔ 查询被用户取消: {request_id}")
+        return jsonify({'error': '查询已取消', 'status': 'cancelled', 'request_id': request_id}), 499
     except Exception as e:
         print(f"❌ 失败: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e), 'status': 'error'}), 500
+        return jsonify({'error': str(e), 'status': 'error', 'request_id': request_id}), 500
+    finally:
+        cancel_registry.cleanup(request_id)
+
+
+@main_bp.route('/cancel_query', methods=['POST'])
+def cancel_query():
+    """取消正在执行的查询"""
+    data = request.get_json() or {}
+    request_id = data.get('request_id')
+    if not request_id:
+        return jsonify({'error': 'Missing request_id', 'status': 'error'}), 400
+    found = cancel_registry.cancel(request_id)
+    if found:
+        print(f"⛔ 收到取消请求: {request_id}")
+        return jsonify({'status': 'cancelled', 'request_id': request_id})
+    return jsonify({'status': 'not_found', 'request_id': request_id}), 404

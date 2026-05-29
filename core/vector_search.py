@@ -1,7 +1,7 @@
 # core/vector_search.py - 表结构向量检索（带模型缓存）
 import threading
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -29,7 +29,8 @@ class TableSchemaSearcher:
     @monitor_function
     def search(cls, db_name: str, query: str, top_k: int = 10,
                kb: KnowledgeBase = None, use_holo_index: bool = True,
-               force_rebuild_vectors: bool = False) -> List[Dict]:
+               force_rebuild_vectors: bool = False,
+               schema_filter: Optional[str] = None) -> List[Dict]:
 
         if not kb:
             kb = KnowledgeBase(db_name)
@@ -49,15 +50,15 @@ class TableSchemaSearcher:
                 all_embeddings = []
                 for i in range(0, len(vector_texts), batch_size):
                     batch = vector_texts[i:i+batch_size]
-                    batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False)
+                    batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)
                     all_embeddings.extend(batch_embeddings)
 
                 embeddings = np.array(all_embeddings)
                 kb.save_embeddings_to_holo(table_records, embeddings)
 
         model = cls._get_model()
-        query_emb = model.encode([query], convert_to_numpy=True, show_progress_bar=False)[0]
-        results = kb.vector_search_in_holo(query_emb.tolist(), top_k)
+        query_emb = model.encode([query], convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)[0]
+        results = kb.vector_search_in_holo(query_emb.tolist(), top_k, schema_filter=schema_filter)
 
         if not results:
             return []
@@ -69,7 +70,7 @@ class TableSchemaSearcher:
         for i, r in enumerate(results, 1):
             table_display = f"{r['schema']}.{r['table_name']}" if r['schema'] else r['table_name']
             similarity_score = r.get('_similarity_score', 0)
-            print(f"{i:2d}. 表名: {table_display:<50} 相似度: {similarity_score:.6f}")
+            print(f"{i:2d}. 表名: {table_display:<50} 距离: {similarity_score:.4f}")
 
         print("=" * 70 + "\n")
 

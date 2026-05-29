@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from volcenginesdkarkruntime import Ark
 
+from .cancellation import CancellationToken
 from .utils import (
     MAX_TABLE_LENGTH_PER_BATCH,
     MAX_BATCHES,
@@ -12,6 +13,9 @@ from .utils import (
     monitor_function,
     retry,
     extract_final_sql,
+    find_invalid_sql_identifiers,
+    build_table_field_hint,
+    extract_relevant_schema_blocks,
 )
 
 
@@ -22,10 +26,23 @@ class DouBaoClient:
         if not self.model:
             raise ValueError('ARK_MODEL environment variable is required')
         self.client = Ark(api_key=self.api_key)
+        self.last_usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'calls': 0}
+
+    def _reset_usage(self):
+        """重置 token 累计器（在每次 generate_text 开始时调用）"""
+        self.last_usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'calls': 0}
 
     @monitor_function
-    def generate_text(self, nl_query: str, formatted_tables: str, knowledge_json: Any, glossary: Optional[List[Dict]] = None) -> str:
-        """生成 SQL，支持拆分长表结构进行多轮对话"""
+    def generate_text(self, nl_query: str, formatted_tables: str, knowledge_json: Any,
+                      glossary: Optional[List[Dict]] = None,
+                      vector_results: Optional[List[Dict]] = None,
+                      cancel_token: Optional[CancellationToken] = None) -> str:
+        """生成 SQL，支持拆分长表结构进行多轮对话
+
+        vector_results: 向量检索结果（含 schema、table_name、_similarity_score、_rank），用于给候选 SQL 打分
+        cancel_token: 取消令牌，每批 LLM 调用前会检查是否被取消
+        """
+        self._reset_usage()
 
         formatted_knowledge = self._format_knowledge(knowledge_json)
         formatted_glossary = self._format_glossary(glossary or [])
@@ -50,6 +67,9 @@ class DouBaoClient:
         all_sql_candidates = []
 
         for i, batch_tables in enumerate(table_batches, 1):
+            if cancel_token is not None and cancel_token.is_cancelled():
+                print(f"    ⛔ 第 {i}/{len(table_batches)} 批前检测到取消信号，停止 LLM 调用")
+                break
             print(f"    ├─ 处理第 {i}/{len(table_batches)} 批（{len(batch_tables)} 字符）")
 
             batch_prompt = f"""你是一个专业的SQL查询生成器。
@@ -70,8 +90,8 @@ class DouBaoClient:
 
 ## 字段格式说明：
 每个字段格式为 `字段名 [数据类型] (注释)`，**字段名仅指方括号前的那段**。
-引用时直接用字段名（如 `grade`），或 `表名.字段名`（如 `db_course_student.grade`）。
-禁止把表名拼到字段名前，例如 `db_course_student_grade` 是错误的。
+引用时直接用字段名（如 `score`），或 `表别名.字段名`（如 `t.score`）。
+**禁止**把表名作为前缀拼到字段名前，例如不能写 `<表名>_<字段名>` 这种形式 —— 模型经常犯这个错误，请反复检查输出。
 
 ## ⚠️ Hologres 类型严格性：
 Hologres 类型不一致会直接报错，必须主动加显式转换：
@@ -81,6 +101,7 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
 - JOIN 两侧类型不一致：给一边加 cast 比如 `a.id::bigint = b.uid`
 - union 两表类型不一致：给一边加 cast 比如 `select id::bigint union all select uid::bigint`
 - 数值字段比较禁止用引号：`WHERE id = 123` 而不是 `WHERE id = '123'`
+- **AS 别名以数字开头必须用双引号包裹**：例如 `COUNT(*) AS "26春在读学生数"`，不能写成 `COUNT(*) AS 26春在读学生数`（会语法错）
 - 留意字段注释里的格式说明（如 "格式: yyyy-mm-dd hh:mm:ss"）来判断转换方式
 
 ## 表结构（第{i}批）：
@@ -113,8 +134,19 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
                 continue
 
         if all_sql_candidates:
-            best_sql = self._select_best_sql(all_sql_candidates, nl_query)
+            best_sql = self._select_best_sql(all_sql_candidates, nl_query, vector_results)
             print(f"    ├─ 从 {len(all_sql_candidates)} 个候选中选择最佳SQL")
+
+            invalid = find_invalid_sql_identifiers(best_sql, formatted_tables)
+            if invalid:
+                print(f"    ⚠️ 分批最佳 SQL 中检测到可疑字段: {invalid}，回退到单批模式重写")
+                # 关键：用 best_sql 涉及的表的完整 schema，而不是把全部 schema 截断
+                relevant_schema = extract_relevant_schema_blocks(best_sql, formatted_tables)
+                print(f"    ├─ 精简 schema 长度: {len(relevant_schema)} 字符（原 {len(formatted_tables)} 字符）")
+                fallback = self._generate_single_request(nl_query, relevant_schema, formatted_knowledge, formatted_glossary)
+                if fallback:
+                    return fallback
+                print(f"    ⚠️ 单批回退失败，仍返回分批 SQL（由数据库报错兜底）")
             return best_sql
 
         print(f"    ⚠️ 所有批次均未找到有效SQL")
@@ -127,8 +159,7 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
             print(f"    ⚠️ 单批表结构过长({len(formatted_tables)}字符)，截断到{MAX_TABLE_LENGTH_PER_BATCH}字符")
             formatted_tables = formatted_tables[:MAX_TABLE_LENGTH_PER_BATCH] + "\n...(表结构已截断)"
 
-        content = self._call_llm(
-            system_prompt=f"""你是一个专业的SQL查询生成器。你需要先一步步思考，再生成最终的SQL语句。
+        system_prompt = f"""你是一个专业的SQL查询生成器。你需要先一步步思考，再生成最终的SQL语句。
 
 ## 输出格式（必须严格遵守）：
 你的输出必须分为两部分，使用以下标记分隔：
@@ -179,30 +210,36 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
 7. **数值字段比较禁止用引号**：`WHERE id = 123` 而不是 `WHERE id = '123'`
 8. **在计算率的时候**：不能直接除0，要case when 判断分母是否为0,且默认返回0。*1.0是为了确保结果是小数而不是整数*
   - 例：case when sum(score)>0 then sum(last_score)*1.0/sum(score) else 0 end as score_rate
+9. **AS 别名以数字开头必须用双引号包裹**：标识符不能以数字开头，否则会语法错
+  - ❌ 错误：`COUNT(*) AS 26春在读学生数`
+  - ✅ 正确：`COUNT(*) AS "26春在读学生数"`
+  - 同理：`AS "2024年订单数"`、`AS "5月签单率"` 等都需要双引号
 
 
 ⚠️ **判断依据**：在思考过程的第3步核对字段时，**留意每个字段的数据类型和注释中的格式描述**（例如注释里写 "格式: yyyy-mm-dd hh:mm:ss" 就用 `::timestamp`），看用法是否需要转换。
 
 ## 正确示例：
 表结构：
-表名: bi.db_course_student 表注释: 学生课程成绩表
+表名: demo.example_table 表注释: 示例表
 列:
-    student_id [bigint] (学生ID)
-    grade [int] (成绩)
-    create_time [text] (创建时间，格式: yyyy-mm-dd hh:mm:ss)
-    birth_date [text] (出生日期，格式: yyyy-mm-dd)
+    user_id [bigint] (用户ID)
+    score [int] (分数)
+    created_at [text] (创建时间，格式: yyyy-mm-dd hh:mm:ss)
+    born_on [text] (出生日期，格式: yyyy-mm-dd)
 
 ✅ 正确 SQL：
-  SELECT grade FROM bi.db_course_student WHERE student_id = 123
-  SELECT * FROM bi.db_course_student WHERE create_time::timestamp >= '2025-01-01 00:00:00'   -- 含时分秒，用 timestamp
-  SELECT * FROM bi.db_course_student WHERE birth_date::date >= '2000-01-01'                  -- 只有日期，用 date
-  SELECT student_id::text FROM bi.db_course_student   -- 显式转 text
+  SELECT score FROM demo.example_table WHERE user_id = 123
+  SELECT * FROM demo.example_table WHERE created_at::timestamp >= '2025-01-01 00:00:00'   -- 含时分秒，用 timestamp
+  SELECT * FROM demo.example_table WHERE born_on::date >= '2000-01-01'                    -- 只有日期，用 date
+  SELECT user_id::text FROM demo.example_table   -- 显式转 text
+  SELECT t.score FROM demo.example_table t WHERE t.user_id = 123  -- 用别名限定
 
-❌ 错误 SQL：
-  SELECT db_course_student_grade FROM bi.db_course_student          -- 字段不存在
-  WHERE student_id = '123'                                          -- bigint 跟字符串比较，Hologres 会报错
-  WHERE create_time::date >= '2025-01-01'                           -- create_time 含时分秒，不能强转 date
-  WHERE create_time >= '2025-01-01'                                 -- text 跟字符串比较看似 OK 但范围比较不可靠
+❌ 错误 SQL（抽象模式描述，不要照抄字符串）：
+  SELECT <表名>_<字段名> FROM <schema>.<表名>          -- 严重错误：把表名作为字段名前缀拼成新字符串，这是最常见的编造模式
+  SELECT <别名>.<表名>_<字段名> FROM <schema>.<表名>   -- 同样错误：正确写法是 <别名>.<字段名>
+  WHERE user_id = '123'                                -- bigint 跟字符串比较，Hologres 会报错
+  WHERE created_at::date >= '2025-01-01'               -- created_at 含时分秒，不能强转 date
+  WHERE created_at >= '2025-01-01'                     -- text 跟字符串比较看似 OK 但范围比较不可靠
 
 ## 表结构（只能使用以下列出的表和字段）：
 {formatted_tables}
@@ -211,19 +248,52 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
 {formatted_glossary}
 
 ## 知识库：
-{formatted_knowledge}""",
-            user_message=f"问题：{nl_query}\n\n请先按格式输出思考过程，再输出最终SQL："
-        )
+{formatted_knowledge}"""
 
+        user_message = f"问题：{nl_query}\n\n请先按格式输出思考过程，再输出最终SQL："
+
+        sql = ""
+        for attempt in range(2):
+            content = self._call_llm(system_prompt=system_prompt, user_message=user_message)
+            sql = self._extract_sql(content)
+
+            if not sql:
+                print(f"    ⚠️ AI返回无效内容: {repr(content[:100]) if content else 'None'}")
+                return ""
+
+            invalid = find_invalid_sql_identifiers(sql, formatted_tables)
+            if not invalid:
+                return sql
+
+            if attempt == 0:
+                print(f"    ⚠️ SQL 中检测到可疑字段（疑似编造或字段不属于该表）: {invalid}，让模型修正后重试")
+                table_hint = build_table_field_hint(sql, formatted_tables)
+                user_message = (
+                    f"问题：{nl_query}\n\n"
+                    f"你上一次生成的 SQL 中包含未在表结构里出现、或不属于其引用表的标识符："
+                    f"{invalid}\n\n"
+                    f"上一次的 SQL：\n{sql}\n\n"
+                    f"⚠️ 重要：以下是 SQL 引用的每张表的**真实字段清单**，你只能从这些字段里选，不要类推或编造：\n"
+                    f"{table_hint}\n\n"
+                    f"请重新生成。检查规则：\n"
+                    f"- 字段名必须严格来自上面列出的真实字段清单，不要做任何字符串拼接或跨表类推\n"
+                    f"- 如需限定字段所属的表，写 `<别名>.<字段名>`，且字段必须确实属于该表\n"
+                    f"- 如果某个指标在表里找不到对应字段，宁可省略该列也不要编造\n\n"
+                    f"请重新输出思考过程和最终 SQL。"
+                )
+            else:
+                print(f"    ⚠️ 重试后仍包含可疑字段: {invalid}（仍返回 SQL，由数据库执行兜底报错）")
+
+        return sql
+
+    def _extract_sql(self, content: str) -> str:
+        """从 LLM 返回的内容中提取 SQL"""
         if content and len(content) > 3:
-            cleaned_sql = extract_final_sql(str(content))
-            if cleaned_sql:
-                return cleaned_sql
-
+            cleaned = extract_final_sql(str(content))
+            if cleaned:
+                return cleaned
         if content and content.strip().upper().startswith(('SELECT', 'WITH')):
             return content.strip()
-
-        print(f"    ⚠️ AI返回无效内容: {repr(content[:100]) if content else 'None'}")
         return ""
 
     @retry(max_attempts=3, delay=1.0, backoff=2.0)
@@ -239,6 +309,14 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
             top_p=0.95,
             max_tokens=4000
         )
+
+        # 累计 token 用量（用于日志统计）
+        if hasattr(completion, 'usage') and completion.usage:
+            self.last_usage['prompt_tokens'] += getattr(completion.usage, 'prompt_tokens', 0) or 0
+            self.last_usage['completion_tokens'] += getattr(completion.usage, 'completion_tokens', 0) or 0
+            self.last_usage['total_tokens'] += getattr(completion.usage, 'total_tokens', 0) or 0
+        self.last_usage['calls'] += 1
+
         if hasattr(completion, 'choices') and completion.choices:
             content = completion.choices[0].message.content
             print(f"    📝 AI原始返回: '{content[:200]}...' " if content and len(content) > 200 else f"    📝 AI原始返回: '{content}'")
@@ -248,8 +326,8 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
     def _split_tables(self, formatted_tables: str) -> List[str]:
         """将表结构拆分成多个批次"""
 
-        table_pattern = r'(表名: [^\n]+(?:\n(?:    .+)?)+)'
-        tables = re.findall(table_pattern, formatted_tables, re.MULTILINE)
+        # 按空行分隔表块（get_formatted_schema 用 "\n\n".join 拼接）
+        tables = [t for t in formatted_tables.split('\n\n') if t.strip().startswith('表名:')]
 
         if not tables:
             return [formatted_tables[i:i+MAX_TABLE_LENGTH_PER_BATCH]
@@ -305,28 +383,72 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
 
         return merged[:target_count]
 
-    def _select_best_sql(self, candidates: List[Dict], query: str) -> str:
-        """从多个候选SQL中选择最佳的一个"""
+    def _select_best_sql(self, candidates: List[Dict], query: str,
+                         vector_results: Optional[List[Dict]] = None) -> str:
+        """从多个候选SQL中选择最佳的一个
+
+        评分维度（权重从高到低）：
+        1. 候选 SQL 用到的表的向量检索排名（最重要）
+        2. query 关键词在 SQL 中的命中数
+        3. 批次顺序（越早越好）
+        """
 
         if len(candidates) == 1:
             return candidates[0]['sql']
 
+        # 构建 "表名 → 向量得分" 映射
+        table_score_map = {}
+        if vector_results:
+            n = len(vector_results)
+            for i, r in enumerate(vector_results):
+                schema = (r.get('schema') or '').lower()
+                tname = r['table_name'].lower()
+                # 排名权重：第 1 名 1.0，第 N 名 1/N
+                rank_weight = (n - i) / n
+                # 距离权重：距离越小越好（归一化后距离范围约 [0, 2]）
+                dist = r.get('_similarity_score', 1.0)
+                dist_weight = max(0, 1.0 - dist / 2.0)
+                # 综合得分
+                score = rank_weight * 0.6 + dist_weight * 0.4
+                table_score_map[f"{schema}.{tname}"] = score
+                table_score_map[tname] = score  # 兼容不带 schema 的引用
+
         keywords = set(re.findall(r'[一-龥a-zA-Z]+', query.lower()))
 
         for candidate in candidates:
-            score = 0
+            score = 0.0
             sql_lower = candidate['sql'].lower()
 
+            # 维度 1：用到的表的向量得分（权重最大）
+            table_match_score = 0.0
+            matched_tables = []
+            for table_key, table_score in table_score_map.items():
+                if table_key in sql_lower:
+                    table_match_score += table_score
+                    matched_tables.append(table_key)
+            score += table_match_score * 5.0  # 权重 5
+
+            # 维度 2：query 关键词命中
+            kw_hits = 0
             for kw in keywords:
                 if kw in sql_lower and len(kw) > 1:
-                    score += 1
+                    kw_hits += 1
+            score += kw_hits * 1.0  # 权重 1
 
+            # 维度 3：批次顺序（越早越好，权重小）
             score += (10 - candidate['batch']) * 0.1
 
             candidate['score'] = score
+            candidate['_matched_tables'] = matched_tables
+            candidate['_table_score'] = table_match_score
+            candidate['_kw_hits'] = kw_hits
 
         best = max(candidates, key=lambda x: x['score'])
-        print(f"    │   └─ 选择第{best['batch']}批的SQL（得分: {best['score']:.1f}）")
+        for c in candidates:
+            print(f"    │   候选[第{c['batch']}批]: 总分={c['score']:.2f} "
+                  f"(表得分={c['_table_score']:.2f} 关键词={c['_kw_hits']} "
+                  f"匹配表={c['_matched_tables']})")
+        print(f"    │   └─ 选择第{best['batch']}批的SQL（得分: {best['score']:.2f}）")
 
         return best['sql']
 

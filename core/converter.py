@@ -1,14 +1,17 @@
 # core/converter.py - 顶层 Text2SQL 转换器 + 预计算入口
 import os
+import time
 from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
 
+from .cancellation import CancellationToken, CancelledError
 from .db_manager import DatabaseManager
 from .knowledge import KnowledgeBase
 from .llm_client import DouBaoClient
+from .query_log import insert_query_log
 from .repos import SQLKnowledgeRepo, GlossaryRepo
 from .utils import SENTENCE_TRANSFORMER_MODEL, monitor_function
 from .vector_search import TableSchemaSearcher
@@ -35,61 +38,128 @@ class TextToSQLConverter:
         top_k_tables: int = 10,
         force_rebuild_vectors: bool = False,
         schema_filter: Optional[str] = None,
+        cancel_token: Optional[CancellationToken] = None,
     ) -> Tuple[str, pd.DataFrame]:
         print(f"\n📝 查询: {nl_query}")
         if schema_filter:
             print(f"🏷️  Schema 过滤: {schema_filter}")
 
-        if selected_table:
-            print(f"🎯 指定表模式: {selected_table}")
-            formatted_tables = self.kb.get_table_schema_by_name(selected_table)
-            if not formatted_tables or formatted_tables.startswith("未找到表"):
-                print(f"   ⚠️ 未找到指定表 {selected_table}，尝试使用所有表")
-                formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
-            else:
-                print(f"   ✅ 只传递了表: {selected_table}")
-        elif use_vector_search:
-            print(f"🔍 向量检索模式: Top {top_k_tables}")
-            best_tables = TableSchemaSearcher.search(
-                self.db_name, nl_query, top_k_tables, self.kb,
-                use_holo_index=True, force_rebuild_vectors=force_rebuild_vectors
-            )
+        t_start = time.time()
+        log_data = {
+            'db_name': self.db_name,
+            'nl_query': nl_query,
+            'schema_filter': schema_filter,
+            'selected_table': selected_table,
+            'top_k': top_k_tables if use_vector_search and not selected_table else None,
+            'search_mode': 'selected_table' if selected_table else ('vector' if use_vector_search else 'all'),
+            'matched_tables': None,
+            'generated_sql': None,
+            'execute_status': 'failed',
+            'error_message': None,
+            'result_rows': None,
+            'search_duration_ms': None,
+            'llm_duration_ms': None,
+            'sql_exec_duration_ms': None,
+            'total_duration_ms': None,
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'llm_calls': 0,
+        }
 
-            if not best_tables:
-                formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
-                print(f"   ⚠️ 向量检索无结果，使用所有表")
-            else:
-                if schema_filter:
-                    filter_set = set(s.strip() for s in schema_filter.split(',') if s.strip())
-                    best_tables = [t for t in best_tables if t.get('schema') in filter_set]
-                selected_names = []
-                for t in best_tables:
-                    if t.get('schema'):
-                        selected_names.append(f"{t['schema']}.{t['table_name']}")
-                    else:
-                        selected_names.append(t['table_name'])
-                if selected_names:
+        sql = None
+        result = None
+
+        try:
+            best_tables = None  # 向量检索结果，给候选 SQL 评分用
+
+            def _check_cancel():
+                if cancel_token is not None:
+                    cancel_token.raise_if_cancelled()
+
+            _check_cancel()
+
+            if selected_table:
+                print(f"🎯 指定表模式: {selected_table}")
+                formatted_tables = self.kb.get_table_schema_by_name(selected_table)
+                if not formatted_tables or formatted_tables.startswith("未找到表"):
+                    print(f"   ⚠️ 未找到指定表 {selected_table}，尝试使用所有表")
+                    formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
+                else:
+                    print(f"   ✅ 只传递了表: {selected_table}")
+            elif use_vector_search:
+                print(f"🔍 向量检索模式: Top {top_k_tables}")
+                t_search_start = time.time()
+                best_tables = TableSchemaSearcher.search(
+                    self.db_name, nl_query, top_k_tables, self.kb,
+                    use_holo_index=True, force_rebuild_vectors=force_rebuild_vectors,
+                    schema_filter=schema_filter,
+                )
+                log_data['search_duration_ms'] = (time.time() - t_search_start) * 1000
+                _check_cancel()
+
+                if not best_tables:
+                    formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
+                    print(f"   ⚠️ 向量检索无结果，使用所有表")
+                else:
+                    selected_names = []
+                    for t in best_tables:
+                        if t.get('schema'):
+                            selected_names.append(f"{t['schema']}.{t['table_name']}")
+                        else:
+                            selected_names.append(t['table_name'])
+                    log_data['matched_tables'] = selected_names
                     formatted_tables = self.kb.get_formatted_schema(selected_names)
                     print(f"   ✅ 传递了 {len(selected_names)} 个相关表")
-                else:
-                    formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
-                    print(f"   ⚠️ schema 过滤后无结果，使用该 schema 所有表")
-        else:
-            print(f"📚 全量模式（所有表结构）")
-            formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
+            else:
+                print(f"📚 全量模式（所有表结构）")
+                formatted_tables = self.kb.get_formatted_schema(schema_filter=schema_filter)
 
-        print(f"    ├─ 传递给AI的表结构长度: {len(formatted_tables)} 字符")
+            print(f"    ├─ 传递给AI的表结构长度: {len(formatted_tables)} 字符")
+            _check_cancel()
 
-        knowledge_json = self.sql_repo.list()
-        glossary = self.glossary_repo.list()
-        sql = self.llm.generate_text(nl_query, formatted_tables, knowledge_json, glossary)
+            knowledge_json = self.sql_repo.list()
+            glossary = self.glossary_repo.list()
 
-        if not sql:
-            raise ValueError("AI未能生成有效的SQL语句")
+            t_llm_start = time.time()
+            sql = self.llm.generate_text(nl_query, formatted_tables, knowledge_json, glossary,
+                                         vector_results=best_tables,
+                                         cancel_token=cancel_token)
+            log_data['llm_duration_ms'] = (time.time() - t_llm_start) * 1000
+            log_data['generated_sql'] = sql
 
-        result = self.db.execute_sql(sql)
+            # 记录 token 用量
+            usage = getattr(self.llm, 'last_usage', {}) or {}
+            log_data['prompt_tokens'] = usage.get('prompt_tokens', 0)
+            log_data['completion_tokens'] = usage.get('completion_tokens', 0)
+            log_data['total_tokens'] = usage.get('total_tokens', 0)
+            log_data['llm_calls'] = usage.get('calls', 0)
 
-        return sql, result
+            if not sql:
+                raise ValueError("AI未能生成有效的SQL语句")
+
+            _check_cancel()
+            t_exec_start = time.time()
+            result = self.db.execute_sql(sql)
+            log_data['sql_exec_duration_ms'] = (time.time() - t_exec_start) * 1000
+            log_data['result_rows'] = len(result) if result is not None else 0
+            log_data['execute_status'] = 'success'
+
+            return sql, result
+
+        except CancelledError as e:
+            log_data['error_message'] = '用户已取消'
+            log_data['execute_status'] = 'cancelled'
+            raise
+
+        except Exception as e:
+            log_data['error_message'] = str(e)[:1000]
+            log_data['execute_status'] = 'failed'
+            raise
+
+        finally:
+            log_data['total_duration_ms'] = (time.time() - t_start) * 1000
+            insert_query_log(self.db_name, log_data)
 
 
 def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
@@ -131,7 +201,7 @@ def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
             all_embeddings = []
             for i in range(0, len(vector_texts), batch_size):
                 batch = vector_texts[i:i+batch_size]
-                batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False)
+                batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)
                 all_embeddings.extend(batch_embeddings)
                 print(f"   ├─ 已处理 {min(i+batch_size, len(vector_texts))}/{len(vector_texts)}")
 

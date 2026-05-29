@@ -19,7 +19,8 @@ from .utils import (
 )
 from .db_manager import DatabasePoolManager, DatabaseManager
 from .llm_client import DouBaoClient
-from .knowledge import KnowledgeBase
+from .knowledge import KnowledgeBase, start_vector_monitor
+from .query_log import insert_query_log
 from .repos import SQLKnowledgeRepo, GlossaryRepo
 from .vector_search import TableSchemaSearcher
 from .converter import TextToSQLConverter, precompute_all_embeddings
@@ -45,6 +46,8 @@ __all__ = [
     'DatabaseManager',
     'DouBaoClient',
     'KnowledgeBase',
+    'start_vector_monitor',
+    'insert_query_log',
     'SQLKnowledgeRepo',
     'GlossaryRepo',
     'TableSchemaSearcher',
