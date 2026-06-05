@@ -15,8 +15,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from sqlalchemy import create_engine, text
-from core import KnowledgeBase, DatabasePoolManager
-from config import get_database_config, get_available_databases
+from core import KnowledgeBase, DatabasePoolManager, EMBEDDING_DIM
+from core.embedding_client import get_embedding_model
+from config import get_database_config, get_available_databases, EXCLUDED_DATABASES
 
 load_dotenv()
 
@@ -44,50 +45,22 @@ class SchemaComparator:
         self._ensure_hash_column()
     
     def _ensure_hash_column(self):
-        """确保 table_embeddings 表有 schema_hash 字段"""
+        """确保 schema_hash 列存在（表需提前通过 sql/create_table_embeddings.sql 创建）"""
+        # 表由 DBA 提前建好，此处仅做兼容性检查
         try:
-            check_sql = """
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = 'knowledge'
-                  AND table_name = 'table_embeddings'
-                  AND column_name = 'schema_hash'
-            )
-            """
             with self.engine.connect() as conn:
-                result = conn.execute(text(check_sql))
-                exists = result.fetchone()[0]
-
-                if not exists:
-                    # 先确保表存在
-                    create_table_sql = """
-                    CREATE SCHEMA IF NOT EXISTS knowledge;
-                    CREATE TABLE IF NOT EXISTS knowledge.table_embeddings (
-                        id BIGSERIAL PRIMARY KEY,
-                        db_name VARCHAR(50) NOT NULL,
-                        schema_name VARCHAR(100),
-                        table_name VARCHAR(100) NOT NULL,
-                        table_comment TEXT,
-                        column_info JSONB,
-                        vector_text TEXT,
-                        embedding FLOAT4[] CHECK(array_ndims(embedding) = 1 AND array_length(embedding, 1) = 384),
-                        text_hash VARCHAR(64),
-                        schema_hash VARCHAR(64),
-                        created_at TIMESTAMP DEFAULT NOW(),
-                        updated_at TIMESTAMP DEFAULT NOW()
+                result = conn.execute(text("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'knowledge'
+                          AND table_name = 'table_embeddings'
+                          AND column_name = 'schema_hash'
                     )
-                    """
-                    conn.execute(text(create_table_sql))
-
-                    # 创建索引
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_table_embeddings_db_name ON knowledge.table_embeddings(db_name)"))
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_table_embeddings_text_hash ON knowledge.table_embeddings(text_hash)"))
-
-                    conn.commit()
-                    logger.info(f"已创建向量表 table_embeddings")
+                """))
+                if not result.fetchone()[0]:
+                    logger.warning("table_embeddings 缺少 schema_hash 列，请执行 sql/create_table_embeddings.sql")
         except Exception as e:
-            logger.warning(f"初始化向量表时出现问题: {e}")
+            logger.warning(f"检查 table_embeddings 时出现问题: {e}")
     
     def get_current_signatures(self) -> Dict[str, str]:
         """轻量获取当前 schema 签名（key -> md5 hash），不取完整字段信息
@@ -113,7 +86,7 @@ class SchemaComparator:
                 AND NOT a.attisdropped
                 AND c.relkind IN ('r', 'p', 'v', 'm')
                 AND n.nspname NOT IN ('information_schema', 'pg_catalog', 'knowledge')
-                AND n.nspname NOT LIKE 'pg_%%'
+                and c.relname not like '%%middle%%'
         )
         SELECT
             schema_name,
@@ -243,37 +216,24 @@ class SchemaComparator:
 
 # ==================== 向量更新器（带模型缓存） ====================
 class VectorUpdater:
-    """向量增量更新器（带模型缓存）"""
+    """向量增量更新器（带模型缓存，支持双列）"""
     
-    # 类级别的模型缓存
-    _model = None
+    # 类级别的模型缓存（per-provider）
+    _models = {}
     _model_lock = threading.Lock()
-    
+
     @classmethod
-    def _get_model(cls):
-        """获取缓存的 SentenceTransformer 模型"""
-        if cls._model is None:
+    def _get_model(cls, provider: str = None):
+        """获取缓存的向量模型"""
+        if provider not in cls._models:
             with cls._model_lock:
-                if cls._model is None:
-                    from sentence_transformers import SentenceTransformer
-                    from pathlib import Path
-
-                    # 跟 app_core.py 用同一份逻辑解析 SENTENCE_TRANSFORMER_MODEL 环境变量
-                    model_path = os.getenv('SENTENCE_TRANSFORMER_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
-                    if model_path.startswith('../') or model_path.startswith('./'):
-                        model_path = str(Path(__file__).parent.absolute() / model_path)
-                    elif not model_path.startswith('/') and not model_path.startswith('http'):
-                        # 不是绝对路径也不是 URL → 当成相对当前文件的路径解析（如果不存在，SentenceTransformer 会回退到 HF Hub）
-                        candidate = Path(__file__).parent.absolute() / model_path
-                        if candidate.exists():
-                            model_path = str(candidate)
-
-                    logger.info(f"🔄 首次加载向量模型: {model_path}")
+                if provider not in cls._models:
+                    logger.info(f"🔄 首次加载向量模型 ({provider or 'default'})...")
                     load_start = time.time()
-                    cls._model = SentenceTransformer(model_path)
+                    cls._models[provider] = get_embedding_model(provider)
                     load_duration = (time.time() - load_start) * 1000
                     logger.info(f"✅ 模型加载完成，耗时: {load_duration:.2f} ms")
-        return cls._model
+        return cls._models[provider]
 
     def __init__(self, db_name: str):
         self.db_name = db_name
@@ -282,60 +242,65 @@ class VectorUpdater:
     
     def update_single_table(self, schema: str, table_name: str, 
                             vector_text: str, columns_json: List) -> bool:
-        """更新单个表的向量"""
+        """更新单个表的向量（两个模型列都更新）"""
         try:
             import numpy as np
             
             logger.info(f"更新表向量: {schema}.{table_name}")
             
-            model = self._get_model()
-            embedding = model.encode([vector_text], convert_to_numpy=True)[0]
-            
-            text_hash = hashlib.md5(vector_text.encode()).hexdigest()
-            embedding_list = embedding.tolist()
-            schema_hash = text_hash
-            
-            delete_sql = """
-            DELETE FROM knowledge.table_embeddings 
-            WHERE db_name = :db_name 
-              AND schema_name = :schema_name 
-              AND table_name = :table_name
-            """
-            
-            insert_sql = """
-            INSERT INTO knowledge.table_embeddings 
-                (db_name, schema_name, table_name, table_comment, column_info, 
-                 vector_text, embedding, text_hash, schema_hash, updated_at)
-            VALUES 
-                (:db_name, :schema_name, :table_name, :table_comment, :column_info, 
-                 :vector_text, :embedding, :text_hash, :schema_hash, NOW())
-            """
-            
-            with self.engine.connect() as conn:
-                conn.execute(
-                    text(delete_sql),
-                    {"db_name": self.db_name, "schema_name": schema, "table_name": table_name}
-                )
+            for provider in ('local', 'api'):
+                model = self._get_model(provider)
+                embedding = model.encode([vector_text], convert_to_numpy=True)[0]
                 
-                conn.execute(
-                    text(insert_sql),
-                    {
-                        "db_name": self.db_name,
-                        "schema_name": schema,
-                        "table_name": table_name,
-                        "table_comment": "",
-                        "column_info": json.dumps(columns_json),
-                        "vector_text": vector_text,
-                        "embedding": embedding_list,
-                        "text_hash": text_hash,
-                        "schema_hash": schema_hash
-                    }
-                )
-                conn.commit()
-            
+                text_hash = hashlib.md5(vector_text.encode()).hexdigest()
+                embedding_list = embedding.tolist()
+                
+                embedding_col = KnowledgeBase._embedding_col(provider)
+                
+                update_sql = f"""
+                UPDATE knowledge.table_embeddings
+                SET {embedding_col} = :embedding,
+                    vector_text = :vector_text,
+                    text_hash = :text_hash,
+                    schema_hash = :schema_hash,
+                    table_comment = :table_comment,
+                    column_info = CAST(:column_info AS jsonb),
+                    updated_at = NOW()
+                WHERE db_name = :db_name
+                  AND schema_name = :schema_name
+                  AND table_name = :table_name
+                """
+
+                insert_sql = f"""
+                INSERT INTO knowledge.table_embeddings
+                    (db_name, schema_name, table_name, table_comment, column_info,
+                     vector_text, {embedding_col}, text_hash, schema_hash, updated_at)
+                VALUES
+                    (:db_name, :schema_name, :table_name, :table_comment, CAST(:column_info AS jsonb),
+                     :vector_text, :embedding, :text_hash, :schema_hash, NOW())
+                """
+
+                params = {
+                    "db_name": self.db_name,
+                    "schema_name": schema,
+                    "table_name": table_name,
+                    "table_comment": "",
+                    "column_info": json.dumps(columns_json),
+                    "vector_text": vector_text,
+                    "embedding": embedding_list,
+                    "text_hash": text_hash,
+                    "schema_hash": text_hash,
+                }
+
+                with self.engine.connect() as conn:
+                    result = conn.execute(text(update_sql), params)
+                    if result.rowcount == 0:
+                        conn.execute(text(insert_sql), params)
+                    conn.commit()
+
             logger.info(f"✅ 更新成功: {schema}.{table_name}")
             return True
-            
+
         except Exception as e:
             logger.error(f"更新失败 {schema}.{table_name}: {e}")
             return False
@@ -541,7 +506,7 @@ def main():
         db_names = args.db
     else:
         db_configs = get_available_databases()
-        db_names = [config['id'] for config in db_configs]
+        db_names = [c['id'] for c in db_configs if c['id'] not in EXCLUDED_DATABASES]
     
     if not db_names:
         logger.error("没有找到可监控的数据库")
@@ -563,6 +528,8 @@ def main():
     try:
         if args.once:
             for db_name in db_names:
+                if db_name in EXCLUDED_DATABASES:
+                    continue
                 service._check_and_update(db_name)
         else:
             service.start()

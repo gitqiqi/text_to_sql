@@ -128,11 +128,13 @@ def handle_nl_query():
         schema_name = data.get('schema_name', '').strip() or None
         use_vector_search = data.get('use_vector_search', True)
         top_k_tables = data.get('top_k_tables', 10)
+        embedding_provider = data.get('embedding_provider', '').strip() or None
 
         print(f"\n{'='*60}")
         print(f"📨 查询: {db_name} - {data['nl_query'][:100]}...")
         print(f"   request_id: {request_id}")
         print(f"   向量检索: {use_vector_search}, 指定表: {selected_table}, schema: {schema_name}")
+        print(f"   向量模型: {embedding_provider or '默认'}")
         print(f"{'='*60}")
 
         converter = TextToSQLConverter(db_name)
@@ -145,15 +147,24 @@ def handle_nl_query():
             top_k_tables=top_k_tables,
             schema_filter=schema_name,
             cancel_token=cancel_token,
+            embedding_provider=embedding_provider,
         )
 
         elapsed = (time.time() - start_time) * 1000
         print(f"✅ 查询完成，总耗时: {elapsed:.2f} ms")
 
+        MAX_DISPLAY_ROWS = 500
+        total_rows = len(result)
+        if total_rows > MAX_DISPLAY_ROWS:
+            display_result = result.head(MAX_DISPLAY_ROWS).to_dict(orient='records')
+        else:
+            display_result = result.to_dict(orient='records')
+
         return jsonify({
             'request_id': request_id,
             'generated_sql': sql,
-            'sql_result': result.to_dict(orient='records'),
+            'sql_result': display_result,
+            'total_rows': total_rows,
             'status': 'success'
         })
     except CancelledError as e:
@@ -166,6 +177,29 @@ def handle_nl_query():
         return jsonify({'error': str(e), 'status': 'error', 'request_id': request_id}), 500
     finally:
         cancel_registry.cleanup(request_id)
+
+
+@main_bp.route('/api/rebuild_all_vectors', methods=['POST'])
+def rebuild_all_vectors():
+    """手动触发全量向量重建"""
+    data = request.get_json() or {}
+    db_name = data.get('db_name', '').strip()
+    if not db_name:
+        return jsonify({'error': 'missing db_name'}), 400
+    try:
+        from core.knowledge import KnowledgeBase
+        kb = KnowledgeBase(db_name)
+        table_records, vector_texts = kb.get_vector_texts()
+        if not table_records:
+            return jsonify({'status': 'success', 'message': '无表需更新'})
+        for provider in ('local', 'api'):
+            from core.embedding_client import get_embedding_model
+            model = get_embedding_model(provider)
+            kb.save_embeddings_incrementally(model, table_records, vector_texts)
+        kb.rebuild_knowledge_vectors()
+        return jsonify({'status': 'success', 'message': f'向量更新完成 ({db_name})'})
+    except Exception as e:
+        return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
 @main_bp.route('/cancel_query', methods=['POST'])

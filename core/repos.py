@@ -1,5 +1,4 @@
 # core/repos.py - 知识库（SQL 知识 + 业务名词）的 CRUD 仓储类
-import threading
 from typing import Dict, List
 
 from sqlalchemy import text
@@ -8,49 +7,11 @@ from .db_manager import DatabasePoolManager
 
 
 class _BaseRepo:
-    """共享建表逻辑（每个 db_name 只跑一次）"""
-
-    _table_initialized = set()
-    _init_lock = threading.Lock()
-
-    _CREATE_SQL = """
-    CREATE SCHEMA IF NOT EXISTS knowledge;
-    CREATE TABLE IF NOT EXISTS knowledge.db_knowledge (
-        id SERIAL PRIMARY KEY,
-        db_name VARCHAR(50) NOT NULL,
-        question TEXT NOT NULL,
-        sql TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS knowledge.business_glossary (
-        id SERIAL PRIMARY KEY,
-        db_name VARCHAR(50) NOT NULL,
-        term VARCHAR(200) NOT NULL,
-        definition TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-    )
-    """
+    """知识库 / 名词仓库基类"""
 
     def __init__(self, db_name: str):
         self.db_name = db_name
         self.engine = DatabasePoolManager.get_engine(db_name)
-
-        if db_name not in _BaseRepo._table_initialized:
-            with _BaseRepo._init_lock:
-                if db_name not in _BaseRepo._table_initialized:
-                    self._ensure_tables()
-                    _BaseRepo._table_initialized.add(db_name)
-
-    def _ensure_tables(self):
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(text(self._CREATE_SQL))
-                conn.commit()
-                print(f"   ✅ 知识库表已就绪")
-        except Exception:
-            print(f"   ⚠️ 知识库表检查失败")
 
 
 class SQLKnowledgeRepo(_BaseRepo):

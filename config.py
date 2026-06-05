@@ -2,9 +2,14 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
+
+# 不参与向量构建的数据库
+EXCLUDED_DATABASES: List[str] = [
+    'hg_recyclebin',
+]
 
 load_dotenv()
 

@@ -32,6 +32,14 @@ else:
 
 print(f"📦 向量模型路径: {SENTENCE_TRANSFORMER_MODEL}")
 
+# 向量嵌入方式选择：'local'（本地 SentenceTransformer）或 'api'（豆包 API）
+EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'local')
+# API 向量模型名（EMBEDDING_PROVIDER='api' 时生效）
+ARK_EMBEDDING_MODEL = os.getenv('ARK_EMBEDDING_MODEL', 'doubao-embedding-vision-251215')
+# 向量维度（不同模型维度不同，请根据实际模型设置）
+_default_dim = '2048' if EMBEDDING_PROVIDER == 'api' else '384'
+EMBEDDING_DIM = int(os.getenv('EMBEDDING_DIM', _default_dim))
+
 # 分批请求配置
 MAX_TABLE_LENGTH_PER_BATCH = int(os.getenv('MAX_TABLE_LENGTH_PER_BATCH', '20000'))
 MAX_BATCHES = int(os.getenv('MAX_BATCHES', '5'))

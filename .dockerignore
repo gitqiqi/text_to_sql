@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.claude/
+.vscode/
+cache/
+.env
+*.md
+pyrightconfig.json
+knowledge_meta.json

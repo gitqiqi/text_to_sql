@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: text2sql
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      SENTENCE_TRANSFORMER_MODEL: /model/paraphrase-multilingual-MiniLM-L12-v2
+    volumes:
+      - /Users/cherry/Project/model:/model:ro
+      - ./cache:/app/cache
+      - ./knowledge_meta.json:/app/knowledge_meta.json
+    restart: unless-stopped
+    # 资源限制——向量编码时很吃 CPU/内存，按需调整
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G

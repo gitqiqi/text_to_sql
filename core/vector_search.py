@@ -1,42 +1,59 @@
 # core/vector_search.py - 表结构向量检索（带模型缓存）
+import os
 import threading
 import time
 from typing import Dict, List, Optional
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
+from .embedding_client import get_embedding_model
 from .knowledge import KnowledgeBase
-from .utils import SENTENCE_TRANSFORMER_MODEL, monitor_function
+from .utils import monitor_function
 
 
 class TableSchemaSearcher:
-    _model = None
+    _models = {}
     _model_lock = threading.Lock()
 
     @classmethod
-    def _get_model(cls):
-        if cls._model is None:
+    def _get_model(cls, provider: str = None):
+        if provider not in cls._models:
             with cls._model_lock:
-                if cls._model is None:
+                if provider not in cls._models:
                     load_start = time.time()
-                    cls._model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
+                    cls._models[provider] = get_embedding_model(provider)
                     load_duration = (time.time() - load_start) * 1000
-                    print(f"    ├─ 加载向量模型: {load_duration:.2f} ms")
-        return cls._model
+                    print(f"    ├─ 加载向量模型 ({provider or 'default'}): {load_duration:.2f} ms")
+        return cls._models[provider]
+
+    @classmethod
+    def _get_embedding_col(cls, provider: str = None) -> str:
+        p = provider or os.getenv('EMBEDDING_PROVIDER', 'local')
+        return 'doubao_embedding' if p == 'api' else 'local_embedding'
 
     @classmethod
     @monitor_function
     def search(cls, db_name: str, query: str, top_k: int = 10,
                kb: KnowledgeBase = None, use_holo_index: bool = True,
                force_rebuild_vectors: bool = False,
-               schema_filter: Optional[str] = None) -> List[Dict]:
+               schema_filter: Optional[str] = None,
+               embedding_provider: str = None) -> List[Dict]:
 
         if not kb:
             kb = KnowledgeBase(db_name)
 
+        embedding_col = cls._get_embedding_col(embedding_provider)
+
         if use_holo_index:
-            vectors_count = kb.get_holo_vectors_count()
+            model = cls._get_model(embedding_provider)
+
+            # 检查该列是否有向量
+            with kb.engine.connect() as conn:
+                from sqlalchemy import text
+                vectors_count = conn.execute(text(f"""
+                    SELECT COUNT(*) FROM knowledge.table_embeddings
+                    WHERE db_name = :d AND {embedding_col} IS NOT NULL
+                """), {"d": db_name}).fetchone()[0]
 
             if vectors_count == 0 or force_rebuild_vectors:
                 table_records, vector_texts = kb.get_vector_texts()
@@ -44,7 +61,7 @@ class TableSchemaSearcher:
                 if not table_records:
                     return []
 
-                model = cls._get_model()
+                model = cls._get_model(embedding_provider)
 
                 batch_size = 50
                 all_embeddings = []
@@ -54,11 +71,11 @@ class TableSchemaSearcher:
                     all_embeddings.extend(batch_embeddings)
 
                 embeddings = np.array(all_embeddings)
-                kb.save_embeddings_to_holo(table_records, embeddings)
+                kb.save_embeddings_to_holo(table_records, embeddings, embedding_col=embedding_col)
 
-        model = cls._get_model()
+        model = cls._get_model(embedding_provider)
         query_emb = model.encode([query], convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)[0]
-        results = kb.vector_search_in_holo(query_emb.tolist(), top_k, schema_filter=schema_filter)
+        results = kb.vector_search_in_holo(query_emb.tolist(), top_k, schema_filter=schema_filter, embedding_col=embedding_col)
 
         if not results:
             return []

@@ -1,6 +1,9 @@
 # core 包：拆分自原 app_core.py
 from .utils import (
     SENTENCE_TRANSFORMER_MODEL,
+    EMBEDDING_PROVIDER,
+    ARK_EMBEDDING_MODEL,
+    EMBEDDING_DIM,
     MAX_TABLE_LENGTH_PER_BATCH,
     MAX_BATCHES,
     MIN_TABLES_PER_BATCH,
@@ -24,9 +27,13 @@ from .query_log import insert_query_log
 from .repos import SQLKnowledgeRepo, GlossaryRepo
 from .vector_search import TableSchemaSearcher
 from .converter import TextToSQLConverter, precompute_all_embeddings
+from .embedding_client import get_embedding_model
 
 __all__ = [
     'SENTENCE_TRANSFORMER_MODEL',
+    'EMBEDDING_PROVIDER',
+    'ARK_EMBEDDING_MODEL',
+    'EMBEDDING_DIM',
     'MAX_TABLE_LENGTH_PER_BATCH',
     'MAX_BATCHES',
     'MIN_TABLES_PER_BATCH',
@@ -53,4 +60,5 @@ __all__ = [
     'TableSchemaSearcher',
     'TextToSQLConverter',
     'precompute_all_embeddings',
+    'get_embedding_model',
 ]

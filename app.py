@@ -2,7 +2,7 @@
 from flask import Flask
 from blueprints import main_bp, knowledge_bp
 from core.knowledge import start_vector_monitor
-from config import get_available_databases
+from config import get_available_databases, EXCLUDED_DATABASES
 
 app = Flask(__name__)
 
@@ -19,8 +19,8 @@ if __name__ == '__main__':
 
     # 启动向量监控线程
     db_configs = get_available_databases()
-    db_names = [db['id'] for db in db_configs]
-    start_vector_monitor(db_names, check_interval=600)  # 10 分钟检查一次
+    db_names = [db['id'] for db in db_configs if db['id'] not in EXCLUDED_DATABASES]
+    start_vector_monitor(db_names)
 
     print("\n" + "="*60)
     print("✅ 启动完成")

@@ -799,10 +799,35 @@
                         <details style="margin-top: 12px;">
                             <summary style="cursor: pointer; color: #667eea; font-size: 13px;">⚙️ 高级选项</summary>
                             <div class="config-group" style="margin-top: 8px;">
+                                <label style="display: block; font-weight: 600; color: #333; margin-bottom: 8px;">🧠 向量模型</label>
+                                <div style="display: flex; gap: 16px;">
+                                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                        <input type="radio" name="embeddingProvider" id="embLocal" value="local" checked>
+                                        <span>本地模型</span>
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                        <input type="radio" name="embeddingProvider" id="embApi" value="api">
+                                        <span>豆包 API (doubao-embedding-vision-250615)</span>
+                                    </label>
+                                </div>
+                                <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                                    切换需要重新提交查询才能生效
+                                </div>
+                            </div>
+                            <div class="config-group" style="margin-top: 8px;">
                                 <label style="display: flex; align-items: center; gap: 8px;">
                                     <input type="checkbox" id="fuzzyMatchCheckbox" checked>
                                     <span>启用降级策略（指定表未找到时自动使用向量检索）</span>
                                 </label>
+                            </div>
+                            <div class="config-group" style="margin-top: 8px; border-top: 1px solid #eee; padding-top: 8px;">
+                                <button type="button" id="rebuildVectorsBtn" style="font-size: 12px; padding: 6px 14px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;">
+                                    🔄 手动更新向量数据库
+                                </button>
+                                <div style="font-size: 11px; color: #999; margin-top: 4px;">
+                                    每日凌晨 1:00 自动更新，必要时可手动触发
+                                </div>
+                                <div id="rebuildVectorsStatus" style="font-size: 11px; color: #667eea; margin-top: 2px;"></div>
                             </div>
                         </details>
                     </div>
@@ -1363,6 +1388,8 @@
             resultSummary.style.display = 'none';
 
             try {
+                const embeddingProvider = document.querySelector('input[name="embeddingProvider"]:checked')?.value || 'local';
+
                 const requestBody = {
                     request_id: currentQueryRequestId,
                     nl_query: query,
@@ -1370,7 +1397,8 @@
                     schema_name: getSelectedSchema(),
                     selected_table: useFullTable ? null : selectedTableValue,
                     use_vector_search: useVectorSearch,
-                    top_k_tables: topKTables
+                    top_k_tables: topKTables,
+                    embedding_provider: embeddingProvider,
                 };
 
                 console.log('请求参数:', requestBody);
@@ -1475,6 +1503,35 @@
         }
 
         document.getElementById('kbManagementBtn').addEventListener('click', goToKnowledgeManagement);
+
+        document.getElementById('rebuildVectorsBtn').addEventListener('click', async () => {
+            const db = document.getElementById('databaseSelect').value;
+            if (!db) { alert('请先选择数据库'); return; }
+            const btn = document.getElementById('rebuildVectorsBtn');
+            const status = document.getElementById('rebuildVectorsStatus');
+            btn.disabled = true;
+            btn.textContent = '⏳ 向量更新中...';
+            status.textContent = '正在更新，请稍候...';
+            try {
+                const resp = await fetch('/api/rebuild_all_vectors', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ db_name: db })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    status.textContent = '✅ ' + (data.message || '更新完成');
+                } else {
+                    status.textContent = '❌ ' + (data.error || '更新失败');
+                }
+            } catch (e) {
+                status.textContent = '❌ 请求失败: ' + e.message;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔄 手动更新向量数据库';
+                setTimeout(() => { status.textContent = ''; }, 5000);
+            }
+        });
     </script>
 </body>
 </html>

@@ -5,15 +5,15 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 
 from .cancellation import CancellationToken, CancelledError
 from .db_manager import DatabaseManager
+from .embedding_client import get_embedding_model
 from .knowledge import KnowledgeBase
 from .llm_client import DouBaoClient
 from .query_log import insert_query_log
 from .repos import SQLKnowledgeRepo, GlossaryRepo
-from .utils import SENTENCE_TRANSFORMER_MODEL, monitor_function
+from .utils import monitor_function
 from .vector_search import TableSchemaSearcher
 
 
@@ -39,6 +39,7 @@ class TextToSQLConverter:
         force_rebuild_vectors: bool = False,
         schema_filter: Optional[str] = None,
         cancel_token: Optional[CancellationToken] = None,
+        embedding_provider: Optional[str] = None,
     ) -> Tuple[str, pd.DataFrame]:
         print(f"\n📝 查询: {nl_query}")
         if schema_filter:
@@ -94,6 +95,7 @@ class TextToSQLConverter:
                     self.db_name, nl_query, top_k_tables, self.kb,
                     use_holo_index=True, force_rebuild_vectors=force_rebuild_vectors,
                     schema_filter=schema_filter,
+                    embedding_provider=embedding_provider,
                 )
                 log_data['search_duration_ms'] = (time.time() - t_search_start) * 1000
                 _check_cancel()
@@ -168,9 +170,9 @@ def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
     if db_name:
         db_names = [db_name]
     else:
-        from config import get_available_databases
+        from config import get_available_databases, EXCLUDED_DATABASES
         db_configs = get_available_databases()
-        db_names = [db_config['id'] for db_config in db_configs]
+        db_names = [db['id'] for db in db_configs if db['id'] not in EXCLUDED_DATABASES]
 
     for name in db_names:
         print(f"\n{'='*60}")
@@ -190,32 +192,42 @@ def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
 
             vectors_count = kb.get_holo_vectors_count()
             if vectors_count > 0 and not force_rebuild:
-                print(f"   ├─ Hologres中已有 {vectors_count} 个向量，跳过（使用 --force 强制重建）")
+                # 增量同步两个模型列
+                print(f"   ├─ Hologres 中已有 {vectors_count} 个向量，走增量同步（使用 --force 可强制全量重建）")
+                for provider in ('local', 'api'):
+                    print(f"   ├─ 加载向量模型 ({provider})...")
+                    model = get_embedding_model(provider)
+                    kb.save_embeddings_incrementally(model, table_records, vector_texts)
                 continue
 
-            print(f"   ├─ 加载向量模型...")
-            model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
+            print(f"   ├─ 全量生成向量中（两个模型）...")
+            for provider in ('local', 'api'):
+                print(f"   ├─ 加载向量模型 ({provider})...")
+                model = get_embedding_model(provider)
 
-            print(f"   ├─ 生成向量中...")
-            batch_size = 50
-            all_embeddings = []
-            for i in range(0, len(vector_texts), batch_size):
-                batch = vector_texts[i:i+batch_size]
-                batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)
-                all_embeddings.extend(batch_embeddings)
-                print(f"   ├─ 已处理 {min(i+batch_size, len(vector_texts))}/{len(vector_texts)}")
+                batch_size = 50
+                all_embeddings = []
+                for i in range(0, len(vector_texts), batch_size):
+                    batch = vector_texts[i:i+batch_size]
+                    batch_embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)
+                    all_embeddings.extend(batch_embeddings)
+                    print(f"   ├─ 已处理 {min(i+batch_size, len(vector_texts))}/{len(vector_texts)} ({provider})")
 
-            embeddings = np.array(all_embeddings)
-
-            kb.save_embeddings_to_holo(table_records, embeddings)
+                embeddings = np.array(all_embeddings)
+                embedding_col = KnowledgeBase._embedding_col(provider)
+                kb.save_embeddings_to_holo(table_records, embeddings, embedding_col=embedding_col)
 
             print(f"   ✅ 完成！已保存 {len(table_records)} 个向量到Hologres")
+
+            # 同时重建知识库和业务名词的向量
+            print(f"   ├─ 重建知识库/名词向量...")
+            kb.rebuild_knowledge_vectors()
 
         except Exception as e:
             print(f"   ❌ 处理数据库 {name} 时出错: {e}")
             import traceback
             traceback.print_exc()
-
+            
 
 if __name__ == "__main__":
     import sys
