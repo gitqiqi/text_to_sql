@@ -47,8 +47,8 @@ class SQLKnowledgeRepo(_BaseRepo):
             raise ValueError("问题和SQL不能为空")
 
         insert_query = """
-        INSERT INTO knowledge.db_knowledge (db_name, question, sql, created_at, updated_at)
-        VALUES (:db_name, :question, :sql, NOW(), NOW())
+        INSERT INTO knowledge.db_knowledge (id, db_name, question, sql, created_at, updated_at)
+        VALUES (COALESCE((SELECT MAX(id) FROM knowledge.db_knowledge), 0) + 1, :db_name, :question, :sql, NOW(), NOW())
         RETURNING id
         """
         try:
