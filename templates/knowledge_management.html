@@ -1230,7 +1230,7 @@
                     const msgDiv = document.createElement('div');
                     msgDiv.className = 'message success';
                     msgDiv.textContent = '✅ 删除成功';
-                    document.querySelector('.panel:last-child').insertBefore(msgDiv, document.querySelector('.table-container'));
+                    document.querySelector('.table-container').before(msgDiv);
                     setTimeout(() => msgDiv.remove(), 1500);
                     
                     loadKnowledge();
