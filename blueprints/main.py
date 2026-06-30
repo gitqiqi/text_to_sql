@@ -1,14 +1,31 @@
 # blueprints/main.py
-from flask import render_template, request, jsonify
+import os
+import math
 import time
+from datetime import datetime, timedelta
+from flask import render_template, request, jsonify
 import pandas as pd
+from sqlalchemy import text
+from werkzeug.utils import secure_filename
 from . import main_bp
 from config import get_available_databases
 from core import (
     DatabaseManager, KnowledgeBase, SQLKnowledgeRepo, TextToSQLConverter,
-    monitor_function, _nl_query_limiter,
+    monitor_function, _nl_query_limiter, insert_query_log,
 )
 from core.cancellation import registry as cancel_registry, CancelledError
+from core.db_manager import DatabasePoolManager
+import numpy as np
+
+
+def safe_records(df: pd.DataFrame) -> list[dict]:
+    """DataFrame.to_dict(orient='records') 的安全版本，将 NaN/NaT/Inf 替换为 None"""
+    df = df.astype(object).where(df.notna(), None)
+    for col in df.columns:
+        for i, val in enumerate(df[col]):
+            if isinstance(val, float) and (math.isinf(val) or math.isnan(val)):
+                df.at[i, col] = None
+    return df.to_dict(orient='records')
 
 
 @main_bp.route('/')
@@ -81,6 +98,7 @@ def knowledge_status():
 @main_bp.route('/execute_sql', methods=['POST'])
 def execute_sql():
     """执行SQL查询"""
+    start_time = time.time()
     try:
         data = request.get_json()
         sql = data.get('sql')
@@ -90,7 +108,113 @@ def execute_sql():
         
         db = DatabaseManager(db_name)
         result = db.execute_sql(sql)
-        return jsonify({'sql_result': result.to_dict(orient='records'), 'status': 'success'})
+        records = safe_records(result)
+        total_duration_ms = (time.time() - start_time) * 1000
+
+        insert_query_log(db_name, {
+            'db_name': db_name,
+            'nl_query': sql,
+            'schema_filter': None,
+            'search_mode': 'manual_sql',
+            'selected_table': None,
+            'top_k': None,
+            'matched_tables': None,
+            'generated_sql': sql,
+            'execute_status': 'success',
+            'error_message': None,
+            'result_rows': len(result),
+            'search_duration_ms': 0,
+            'llm_duration_ms': 0,
+            'sql_exec_duration_ms': total_duration_ms,
+            'total_duration_ms': total_duration_ms,
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'llm_calls': 0,
+        })
+
+        return jsonify({'sql_result': records, 'status': 'success'})
+    except Exception as e:
+        total_duration_ms = (time.time() - start_time) * 1000
+        insert_query_log(db_name, {
+                'db_name': db_name,
+                'nl_query': sql,
+                'schema_filter': None,
+                'search_mode': 'manual_sql',
+                'selected_table': None,
+                'top_k': None,
+                'matched_tables': None,
+                'generated_sql': sql,
+                'execute_status': 'failed',
+                'error_message': str(e)[:1000],
+                'result_rows': 0,
+                'search_duration_ms': 0,
+                'llm_duration_ms': 0,
+                'sql_exec_duration_ms': total_duration_ms,
+                'total_duration_ms': total_duration_ms,
+                'prompt_tokens': 0,
+                'completion_tokens': 0,
+                'total_tokens': 0,
+                'llm_calls': 0,
+            })
+        return jsonify({'error': str(e), 'status': 'error'}), 500
+
+
+@main_bp.route('/api/query_history', methods=['POST'])
+def query_history():
+    """获取查询历史记录（支持时间范围筛选）"""
+    try:
+        data = request.get_json() or {}
+        db_name = data.get('db_name')
+        limit = min(int(data.get('limit', 50)), 200)
+        start_time = data.get('start_time')
+        end_time = data.get('end_time')
+        search_mode = data.get('search_mode')
+        if not db_name:
+            return jsonify({'error': 'missing db_name'}), 400
+
+        engine = DatabasePoolManager.get_engine(db_name)
+
+        # 动态构建 WHERE 条件
+        where_clauses = ['db_name = :db_name']
+        params = {'db_name': db_name, 'limit': limit}
+
+        if start_time:
+            where_clauses.append('created_at >= :start_time')
+            params['start_time'] = start_time
+        if end_time:
+            end_dt = datetime.strptime(end_time, '%Y-%m-%d') + timedelta(days=1)
+            where_clauses.append('created_at < :end_time_plus')
+            params['end_time_plus'] = end_dt.strftime('%Y-%m-%d')
+        if search_mode:
+            where_clauses.append('search_mode = :search_mode')
+            params['search_mode'] = search_mode
+
+        where_sql = ' AND '.join(where_clauses)
+
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT nl_query, search_mode, generated_sql, execute_status,
+                       result_rows, total_duration_ms, error_message, created_at
+                FROM knowledge.query_log
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT :limit
+            """), params).fetchall()
+
+        history = []
+        for row in rows:
+            history.append({
+                'nl_query': row._mapping.get('nl_query'),
+                'search_mode': row._mapping.get('search_mode'),
+                'generated_sql': row._mapping.get('generated_sql'),
+                'execute_status': row._mapping.get('execute_status'),
+                'result_rows': row._mapping.get('result_rows'),
+                'total_duration_ms': row._mapping.get('total_duration_ms'),
+                'error_message': row._mapping.get('error_message'),
+                'created_at': str(row._mapping.get('created_at')) if row._mapping.get('created_at') else None,
+            })
+        return jsonify({'history': history, 'status': 'success'})
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
 
@@ -156,9 +280,9 @@ def handle_nl_query():
         MAX_DISPLAY_ROWS = 500
         total_rows = len(result)
         if total_rows > MAX_DISPLAY_ROWS:
-            display_result = result.head(MAX_DISPLAY_ROWS).to_dict(orient='records')
+            display_result = safe_records(result.head(MAX_DISPLAY_ROWS))
         else:
-            display_result = result.to_dict(orient='records')
+            display_result = safe_records(result)
 
         return jsonify({
             'request_id': request_id,
@@ -214,3 +338,67 @@ def cancel_query():
         print(f"⛔ 收到取消请求: {request_id}")
         return jsonify({'status': 'cancelled', 'request_id': request_id})
     return jsonify({'status': 'not_found', 'request_id': request_id}), 404
+
+
+@main_bp.route('/api/upload_excel', methods=['POST'])
+def upload_excel():
+    """上传 Excel 并导入到 tmp schema 下的指定表"""
+    db_name = request.form.get('db_name', '').strip()
+    table_name = request.form.get('table_name', '').strip()
+    file = request.files.get('file')
+
+    if not db_name:
+        return jsonify({'error': '请选择数据库', 'status': 'error'}), 400
+    if not table_name:
+        return jsonify({'error': '请输入表名', 'status': 'error'}), 400
+    if not file or not file.filename:
+        return jsonify({'error': '请选择文件', 'status': 'error'}), 400
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({'error': '仅支持 .xlsx 或 .xls 格式', 'status': 'error'}), 400
+
+    safe_name = table_name.replace(' ', '_').replace('-', '_')
+    safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
+    if not safe_name:
+        return jsonify({'error': '表名不合法，请使用字母、数字、下划线', 'status': 'error'}), 400
+
+    try:
+        df = pd.read_excel(file)
+        if df.empty:
+            return jsonify({'error': 'Excel 文件为空', 'status': 'error'}), 400
+
+        df.columns = [str(c).strip().replace(' ', '_') for c in df.columns]
+
+        engine = DatabasePoolManager.get_engine(db_name)
+
+        # Phase 1: DDL - DROP + CREATE 在独立事务中
+        type_map = {
+            'int64': 'BIGINT', 'Int64': 'BIGINT',
+            'float64': 'DOUBLE PRECISION', 'Float64': 'DOUBLE PRECISION',
+            'bool': 'BOOLEAN',
+            'datetime64[ns]': 'TIMESTAMP',
+            'object': 'TEXT',
+        }
+        cols = []
+        for name, dtype in df.dtypes.items():
+            pg_type = type_map.get(str(dtype), 'TEXT')
+            safe_col = str(name).replace('"', '""')
+            cols.append(f'"{safe_col}" {pg_type}')
+        with engine.connect() as conn:
+            conn.execute(text(f'DROP TABLE IF EXISTS tmp."{safe_name}" CASCADE'))
+            conn.execute(text(f'CREATE TABLE tmp."{safe_name}" ({", ".join(cols)})'))
+            conn.commit()
+
+        # Phase 2: DML - INSERT 在独立事务中
+        df.to_sql(safe_name, engine, schema='tmp', if_exists='append', index=False, method=None)
+
+        row_count = len(df)
+        full_name = f"tmp.{safe_name}"
+        return jsonify({
+            'status': 'success',
+            'table_name': full_name,
+            'row_count': row_count,
+            'columns': list(df.columns),
+            'message': f'✅ 成功导入 {row_count} 行数据到 {full_name}'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'status': 'error'}), 500

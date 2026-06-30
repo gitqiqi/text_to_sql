@@ -103,7 +103,7 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
 - union 两表类型不一致：给一边加 cast 比如 `select id::bigint union all select uid::bigint`
 - 数值字段比较禁止用引号：`WHERE id = 123` 而不是 `WHERE id = '123'`
 - **AS 别名以数字开头必须用双引号包裹**：例如 `COUNT(*) AS "26春在读学生数"`，不能写成 `COUNT(*) AS 26春在读学生数`（会语法错）
-- 留意字段注释里的格式说明（如 "格式: yyyy-mm-dd hh:mm:ss"）来判断转换方式
+- 留意字段注释里的格式说明（如 "格式: yyyy-mm-dd hh:mi:ss"）来判断转换方式
 
 ## 表结构（第{i}批）：
 {batch_tables}

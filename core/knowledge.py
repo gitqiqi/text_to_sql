@@ -812,6 +812,7 @@ class KnowledgeBase:
                 AND n.nspname NOT IN ({excluded_schemas})
                 and c.relname NOT LIKE '%%_middle%%'
                 AND n.nspname NOT LIKE 'pg_%%'
+                AND has_schema_privilege(n.nspname, 'USAGE')
         ),
         column_comments AS (
             SELECT
@@ -830,6 +831,7 @@ class KnowledgeBase:
                 AND n.nspname NOT IN ({excluded_schemas})
                 and c.relname NOT LIKE '%%_middle%%'
                 AND n.nspname NOT LIKE 'pg_%%'
+                AND has_schema_privilege(n.nspname, 'USAGE')
         ),
         table_columns AS (
             SELECT
@@ -1110,7 +1112,7 @@ def start_vector_monitor(db_names: List[str]):
     Args:
         db_names: 要监控的数据库名称列表
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta
     global _monitor_thread
 
     with _monitor_lock:
@@ -1125,7 +1127,7 @@ def start_vector_monitor(db_names: List[str]):
                 now = datetime.now()
                 next_run = now.replace(hour=1, minute=0, second=0, microsecond=0)
                 if now >= next_run:
-                    next_run = next_run.replace(day=next_run.day + 1)
+                    next_run = next_run + timedelta(days=1)
                 sleep_seconds = (next_run - now).total_seconds()
                 print(f"   ├─ 距下次检查还有 {sleep_seconds / 3600:.1f} 小时 ({next_run.strftime('%Y-%m-%d %H:%M')})")
                 time.sleep(sleep_seconds)

@@ -4,6 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>自然语言转SQL查询系统</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sql-formatter@14/dist/sql-formatter.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -14,40 +22,29 @@
             line-height: 1.6;
             margin: 0;
             padding: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
+            background: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
         }
 
         .container {
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 16px 20px;
+            max-width: 100%;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
 
         .main-header {
-            text-align: center;
-            margin-bottom: 16px;
-        }
-
-        .main-header h1 {
-            color: white;
-            font-size: 1.8rem;
-            margin-bottom: 4px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-        }
-
-        .main-header p {
-            color: rgba(255,255,255,0.9);
-            font-size: 0.9rem;
-            margin: 0;
+            display: none;
         }
 
         .database-selector {
             background: white;
-            border-radius: 16px;
-            padding: 16px 20px;
-            margin-bottom: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            padding: 10px 20px;
+            border-bottom: 1px solid #e8e8e8;
+            flex-shrink: 0;
         }
 
         .database-selector-row {
@@ -95,29 +92,142 @@
             margin-top: 6px;
         }
 
-        .kb-status {
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 8px 12px;
-            margin-top: 10px;
-            font-size: 12px;
-            color: #555;
-            border-left: 3px solid #667eea;
-            white-space: pre-line;
+        .upload-section {
+            background: white;
+            border-radius: 16px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
         }
 
-        .kb-management-btn {
+        .upload-section summary {
+            cursor: pointer;
+            color: #667eea;
+            font-size: 14px;
+            font-weight: 600;
+            padding: 4px 0;
+        }
+
+        .upload-section summary:hover {
+            color: #5a67d8;
+        }
+
+        .upload-body {
+            padding: 16px 0 4px 0;
+        }
+
+        .upload-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .upload-field {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .upload-field label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .upload-field input[type="text"] {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+            min-height: auto;
+        }
+
+        .upload-field input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .upload-field input[type="file"] {
+            width: 100%;
+            padding: 8px 0;
+            font-size: 13px;
+            color: #555;
+        }
+
+        .upload-field input[type="file"]::file-selector-button {
+            padding: 8px 16px;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            background: white;
+            color: #667eea;
+            font-weight: 600;
+            font-size: 13px;
+            cursor: pointer;
+            margin-right: 10px;
+            transition: all 0.2s;
+        }
+
+        .upload-field input[type="file"]::file-selector-button:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .upload-btn {
             white-space: nowrap;
-            padding: 10px 16px;
-            background: #8b5cf6;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
             border: none;
             border-radius: 10px;
             cursor: pointer;
             font-weight: 600;
             font-size: 13px;
-            margin: 0;
             height: 42px;
+            transition: all 0.3s ease;
+        }
+
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .upload-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .upload-status {
+            margin-top: 12px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .upload-status.success {
+            display: block;
+            background: #e8f5e9;
+            color: #2e7d32;
+            border-left: 3px solid #2e7d32;
+        }
+
+        .upload-status.error {
+            display: block;
+            background: #fee;
+            color: #c00;
+            border-left: 3px solid #c00;
+        }
+
+        .upload-status.loading {
+            display: block;
+            background: #e8f0fe;
+            color: #667eea;
+            border-left: 3px solid #667eea;
         }
 
         .multi-select-container {
@@ -192,12 +302,12 @@
             right: 0;
             margin-top: 4px;
             background: white;
-            border: 1px solid #e0e0e0;
+            border: 1px solid #d0d0d0;
             border-radius: 10px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
             max-height: 280px;
             overflow-y: auto;
-            z-index: 100;
+            z-index: 9999;
             display: none;
         }
 
@@ -213,19 +323,22 @@
             gap: 8px;
             font-size: 13px;
             transition: background 0.15s;
+            color: #333;
         }
 
         .multi-select-option:hover {
-            background: #f5f5ff;
+            background: #eef0ff;
         }
 
         .multi-select-option input[type="checkbox"] {
             margin: 0;
             cursor: pointer;
+            width: 14px;
+            height: 14px;
         }
 
         .multi-select-option.all-option {
-            border-bottom: 1px solid #f0f0f0;
+            border-bottom: 1px solid #e0e0e0;
             font-weight: 600;
             color: #4338ca;
         }
@@ -234,17 +347,18 @@
             display: flex;
             gap: 0;
             position: relative;
-            min-height: 600px;
+            flex: 1;
+            overflow: hidden;
         }
 
         .content-main {
             flex: 1;
             background: white;
-            border-radius: 20px;
-            padding: 24px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            transition: all 0.3s ease;
-            margin-right: 0;
+            padding: 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         .ai-sidebar {
@@ -257,7 +371,7 @@
             box-shadow: -4px 0 20px rgba(0,0,0,0.1);
             transition: width 0.3s ease;
             z-index: 1000;
-            overflow: hidden;
+            overflow: visible;
             display: flex;
             flex-direction: column;
         }
@@ -353,6 +467,136 @@
             right: 15px;
             background: linear-gradient(135deg, #5a67d8, #6b46a0);
             width: 52px;
+        }
+
+        .left-toggle-btn {
+            white-space: nowrap;
+            padding: 10px 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            height: 42px;
+            transition: all 0.2s;
+        }
+
+        .left-toggle-btn:hover {
+            background: #5a67d8;
+        }
+
+        .left-sidebar {
+            width: 320px;
+            min-width: 200px;
+            max-width: 500px;
+            background: white;
+            border-right: 1px solid #e8e8e8;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+            transition: width 0.2s ease;
+        }
+
+        .left-sidebar.resizing {
+            transition: none;
+        }
+
+        .left-sidebar.closed {
+            width: 0 !important;
+            min-width: 0;
+            padding: 0;
+            margin: 0;
+            border: none;
+            overflow: hidden;
+        }
+
+        .tool-panel-header {
+            padding: 16px 20px;
+            font-size: 15px;
+            font-weight: 700;
+            color: #333;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .tool-collapse-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #999;
+            font-size: 12px;
+            padding: 4px 6px;
+            border-radius: 4px;
+            transition: all 0.2s;
+            line-height: 1;
+        }
+
+        .tool-collapse-btn:hover {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .sidebar-edge {
+            position: relative;
+            flex-shrink: 0;
+            width: 7px;
+            margin: 0 -3px;
+            z-index: 10;
+        }
+
+        .resize-handle {
+            position: absolute;
+            top: 0;
+            left: 2px;
+            right: 2px;
+            bottom: 0;
+            cursor: col-resize;
+            border-radius: 2px;
+            transition: background 0.15s;
+            z-index: 1;
+        }
+
+        .resize-handle:hover,
+        .resize-handle.dragging {
+            background: #667eea;
+        }
+
+        .restore-btn {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 36px;
+            background: white;
+            border: none;
+            border-radius: 0 6px 6px 0;
+            box-shadow: 1px 2px 6px rgba(0,0,0,0.12);
+            cursor: pointer;
+            color: #667eea;
+            font-size: 10px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2;
+            padding: 0;
+            transition: all 0.2s;
+        }
+
+        .restore-btn:hover {
+            background: #667eea;
+            color: white;
+            width: 24px;
+        }
+
+        .left-sidebar.closed ~ .sidebar-edge .restore-btn {
+            display: flex;
         }
 
         .sidebar-overlay {
@@ -509,10 +753,10 @@
 
         .bottom-result {
             background: white;
-            border-radius: 20px;
-            padding: 24px;
-            margin-top: 24px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            padding: 20px 20px;
+            flex: 1;
+            overflow: auto;
+            min-height: 0;
         }
 
         .bottom-result h2 {
@@ -532,7 +776,116 @@
         }
 
         .sql-query-section {
-            margin-bottom: 24px;
+            flex: 2;
+            background: #1e1e1e;
+            display: flex;
+            flex-direction: column;
+            min-height: 200px;
+        }
+
+        .sql-section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: #2d2d2d;
+            border-bottom: 1px solid #3c3c3c;
+            flex-shrink: 0;
+        }
+
+        .sql-section-header h2 {
+            margin: 0;
+            font-size: 14px;
+            color: #e0e0e0;
+            font-weight: 600;
+        }
+
+        .sql-section-header .sql-hint {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .sql-editor-wrap {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+        }
+
+        .sql-editor-wrap .CodeMirror {
+            height: 100%;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .sql-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 20px;
+            background: #2d2d2d;
+            border-top: 1px solid #3c3c3c;
+            flex-shrink: 0;
+        }
+
+        .sql-toolbar button {
+            margin: 0;
+            padding: 8px 24px;
+            font-size: 13px;
+            border-radius: 6px;
+            background: #0d7377;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .sql-toolbar button:hover {
+            background: #0a8a8f;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .sql-toolbar .loading {
+            font-size: 13px;
+            color: #888;
+            padding: 0;
+        }
+
+        .sql-toolbar .loading:after {
+            border-color: #888;
+            border-top-color: transparent;
+        }
+
+        .sql-resize-handle {
+            height: 6px;
+            background: #e8e8e8;
+            cursor: row-resize;
+            flex-shrink: 0;
+            position: relative;
+            transition: background 0.15s;
+        }
+
+        .sql-resize-handle:hover,
+        .sql-resize-handle.dragging {
+            background: #667eea;
+        }
+
+        .sql-resize-handle::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 40px;
+            height: 3px;
+            background: #ccc;
+            border-radius: 2px;
+        }
+
+        .sql-resize-handle:hover::after,
+        .sql-resize-handle.dragging::after {
+            background: white;
         }
 
         .info-badge {
@@ -677,11 +1030,164 @@
             box-shadow: none;
         }
 
+        .tool-panel-body {
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .tool-section {
+            background: #f8f9fb;
+            border-radius: 10px;
+        }
+
+        .tool-section-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 14px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: #333;
+            user-select: none;
+            transition: background 0.12s;
+        }
+
+        .tool-section-header:hover {
+            background: #eef0f5;
+        }
+
+        .tool-section-header .arrow {
+            font-size: 10px;
+            color: #999;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+
+        .tool-section-header.collapsed .arrow {
+            transform: rotate(-90deg);
+        }
+
+        .tool-section-body {
+            padding: 0 14px 14px 14px;
+        }
+
+        .tool-section-body.hidden {
+            display: none;
+        }
+
+        .tool-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        .tool-input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 13px;
+            transition: border-color 0.2s;
+        }
+
+        .tool-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .tool-btn {
+            width: 100%;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .tool-btn:hover {
+            opacity: 0.9;
+        }
+
+        .tool-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .history-item {
+            padding: 10px 12px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            transition: background 0.12s;
+        }
+        .history-item:hover {
+            background: #eef0ff;
+        }
+        .history-item:last-child {
+            border-bottom: none;
+        }
+        .history-sql {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: #333;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 4px;
+        }
+        .history-meta {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 2px 8px;
+            font-size: 10px;
+            color: #999;
+            line-height: 1.6;
+        }
+        .history-status {
+            font-weight: 600;
+        }
+        .history-status.success { color: #28a745; }
+        .history-status.failed { color: #dc3545; }
+        .history-extra {
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-loading {
+            color: #999;
+            text-align: center;
+            padding: 12px 0;
+            font-size: 12px;
+        }
+        .history-empty {
+            color: #999;
+            text-align: center;
+            padding: 20px 0;
+            font-size: 12px;
+        }
+
         @media (max-width: 768px) {
             .ai-sidebar.open {
                 width: 100%;
             }
-            
+            .left-sidebar {
+                width: 240px;
+                min-width: 240px;
+            }
+            .left-sidebar.closed {
+                width: 0;
+                min-width: 0;
+            }
             .open-sidebar-btn {
                 width: 40px;
                 height: 60px;
@@ -693,39 +1199,87 @@
 </head>
 <body>
     <div class="container">
-        <div class="main-header">
-            <h1>🤖 自然语言转SQL查询系统</h1>
-            <p>用自然语言提问，AI 自动生成 SQL 并执行查询 | 支持向量检索、指定表、全量检索三种模式</p>
-        </div>
-
         <div class="database-selector">
             <div class="database-selector-row">
                 <select id="databaseSelect" style="display: none;">
                     <option value="">正在加载...</option>
                 </select>
-                <div class="selector-group" style="flex: 1;">
-                    <label>🏷️ Schema (可多选)</label>
-                    <div class="multi-select-container" id="schemaMultiSelect">
-                        <div class="multi-select-display" id="schemaDisplay">
-                            <span class="multi-select-placeholder">全部 Schema</span>
-                        </div>
-                        <div class="multi-select-dropdown" id="schemaDropdown"></div>
-                    </div>
-                </div>
-                <button id="kbManagementBtn" class="kb-management-btn">📚 知识库</button>
+                <div class="selector-group" style="display: flex; align-items: center;"></div>
             </div>
             <div class="database-description" id="databaseDescription" style="display: none;"></div>
-            <div id="kbStatus" class="kb-status" style="display: none;"></div>
         </div>
 
         <div class="main-content">
+            <div class="left-sidebar" id="leftSidebar">
+                <div class="tool-panel-header">
+                    <span>🛠 工具</span>
+                    <button class="tool-collapse-btn" id="toggleLeftSidebar">◀</button>
+                </div>
+                <div class="tool-panel-body">
+                    <div class="tool-section">
+                        <div class="tool-section-header" data-section="upload">
+                            <span class="arrow">▾</span>
+                            <span>📤 Excel 导入</span>
+                        </div>
+                        <div class="tool-section-body" id="sectionUpload">
+                            <label class="tool-label">表名</label>
+                            <input type="text" id="uploadTableName" class="tool-input" placeholder="例如：sales_data" style="margin-bottom: 10px;">
+                            <label class="tool-label">Excel 文件</label>
+                            <input type="file" id="uploadFileInput" accept=".xlsx,.xls" style="width: 100%; margin-bottom: 10px; font-size: 13px;">
+                            <button id="uploadExcelBtn" class="tool-btn">⬆ 上传导入</button>
+                            <div id="uploadStatus" class="upload-status" style="margin-top: 8px;"></div>
+                        </div>
+                    </div>
+                    <div class="tool-section">
+                        <div class="tool-section-header collapsed" data-section="history">
+                            <span class="arrow">▾</span>
+                            <span>📜 历史记录</span>
+                        </div>
+                        <div class="tool-section-body hidden" id="sectionHistory">
+                            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                                <input type="text" id="historyDateRange" class="tool-input" style="flex:1; font-size:11px; padding:4px 6px;" placeholder="选择日期范围" readonly>
+                                <select id="historyModeFilter" class="tool-input" style="font-size:11px; padding:4px 6px; border:1px solid #ddd; border-radius:4px;">
+                                    <option value="">全部</option>
+                                    <option value="manual_sql">手动</option>
+                                    <option value="nl_query">AI</option>
+                                </select>
+                                <button id="historyFilterBtn" style="padding:4px 8px; font-size:11px; background:#667eea; color:white; border:none; border-radius:4px; cursor:pointer; white-space:nowrap;">筛选</button>
+                            </div>
+                            <div id="historyList" style="max-height: 260px; overflow-y: auto; font-size: 12px;">
+                                <div style="color: #999; text-align: center; padding: 20px 0;">加载中...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="sidebar-edge" id="sidebarEdge">
+                <div class="resize-handle" id="resizeHandle"></div>
+                <button class="restore-btn" id="restoreBtn">▶</button>
+            </div>
+
             <div class="content-main">
-                <div class="sql-query-section">
-                    <h2 style="margin-top: 0; margin-bottom: 16px;">📝 跑数查询</h2>
-                    <p style="color: #666; margin-bottom: 16px;">直接输入 SQL 查询并执行，适合快速跑数分析。</p>
-                    <textarea id="sqlQuery" placeholder="请输入 SQL 查询，例如：SELECT * FROM orders LIMIT 100"></textarea>
-                    <button id="executeSqlBtn">▶ 执行 SQL 查询</button>
-                    <div class="loading" id="sqlLoadingIndicator">正在执行 SQL</div>
+                <div class="sql-query-section" id="sqlQuerySection">
+                    <div class="sql-section-header">
+                        <h2>📝 SQL Query</h2>
+                        <span class="sql-hint">直接输入 SQL 并执行，支持语法高亮</span>
+                    </div>
+                    <div class="sql-editor-wrap" id="sqlEditorWrap">
+                        <textarea id="sqlQuery" placeholder="SELECT * FROM orders LIMIT 100"></textarea>
+                    </div>
+                    <div class="sql-toolbar">
+                        <button id="executeSqlBtn">▶ 执行 SQL 查询</button>
+                        <div class="loading" id="sqlLoadingIndicator">正在执行 SQL</div>
+                    </div>
+                </div>
+                <div class="sql-resize-handle" id="sqlResizeHandle"></div>
+                <div class="bottom-result">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h2 style="margin: 0;">📊 查询结果</h2>
+                        <button id="exportCsvBtn" class="btn-small" style="display: none;">📥 导出 CSV</button>
+                    </div>
+                    <div id="sharedResultSummary" class="shared-result-summary" style="display: none;"></div>
+                    <div id="sharedResultData"></div>
+                    <div id="sharedResultError" class="result-box error-box" style="display: none;"></div>
                 </div>
             </div>
 
@@ -737,7 +1291,17 @@
                 <div class="sidebar-content">
                     <p style="color: #666; margin-bottom: 16px;">用自然语言提问，AI 会自动生成 SQL 并执行查询。</p>
                     <textarea id="nlQuery" placeholder="请输入您的自然语言查询，例如：查询最近一个月销量最高的10本书"></textarea>
-                    
+
+                    <div style="margin: 12px 0; position: relative; z-index: 1;">
+                        <label style="font-weight: 600; color: #333; display: block; margin-bottom: 6px; font-size: 13px;">🏷️ Schema 过滤</label>
+                        <div class="multi-select-container" id="schemaMultiSelect">
+                            <div class="multi-select-display" id="schemaDisplay">
+                                <span class="multi-select-placeholder">全部 Schema</span>
+                            </div>
+                            <div class="multi-select-dropdown" id="schemaDropdown"></div>
+                        </div>
+                    </div>
+
                     <div style="margin: 16px 0;">
                         <label style="font-weight: 600; color: #333; display: block; margin-bottom: 12px;">🔍 检索策略</label>
                         
@@ -840,6 +1404,10 @@
                         <h3>📄 生成的 SQL</h3>
                         <div class="sql-box" id="generatedSQL">等待输入...</div>
                     </div>
+
+                    <div style="border-top: 1px solid #f0f0f0; padding-top: 16px; margin-top: 16px;">
+                        <button id="kbManagementBtn" style="width: 100%; padding: 10px 16px; background: #8b5cf6; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13px;">📚 知识库管理</button>
+                    </div>
                 </div>
             </div>
 
@@ -850,15 +1418,6 @@
             AI<br>SQL
         </button>
 
-        <div class="bottom-result">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                <h2 style="margin: 0;">📊 查询结果</h2>
-                <button id="exportCsvBtn" class="btn-small" style="display: none;">📥 导出 CSV</button>
-            </div>
-            <div id="sharedResultSummary" class="shared-result-summary" style="display: none;"></div>
-            <div id="sharedResultData"></div>
-            <div id="sharedResultError" class="result-box error-box" style="display: none;"></div>
-        </div>
     </div>
 
     <script>
@@ -1021,30 +1580,77 @@
             window.location.href = '/knowledge/management';
         }
 
-        const sidebar = document.getElementById('aiSidebar');
+        const aiSidebar = document.getElementById('aiSidebar');
         const overlay = document.getElementById('sidebarOverlay');
-        const openBtn = document.getElementById('openSidebarBtn');
-        const closeBtn = document.getElementById('closeSidebar');
 
-        function openSidebar() {
-            sidebar.classList.add('open');
+        function openAiSidebar() {
+            aiSidebar.classList.add('open');
             overlay.classList.add('show');
             document.body.classList.add('sidebar-open');
         }
 
-        function closeSidebar() {
-            sidebar.classList.remove('open');
+        function closeAiSidebar() {
+            aiSidebar.classList.remove('open');
             overlay.classList.remove('show');
             document.body.classList.remove('sidebar-open');
         }
 
-        openBtn.addEventListener('click', openSidebar);
-        closeBtn.addEventListener('click', closeSidebar);
-        overlay.addEventListener('click', closeSidebar);
+        document.querySelectorAll('.tool-section-header').forEach(header => {
+            header.addEventListener('click', () => {
+                const target = header.dataset.section;
+                const body = document.getElementById('section' + target.charAt(0).toUpperCase() + target.slice(1));
+                if (body) {
+                    body.classList.toggle('hidden');
+                    header.classList.toggle('collapsed');
+                }
+            });
+        });
+
+        const leftSidebar = document.getElementById('leftSidebar');
+        const resizeHandle = document.getElementById('resizeHandle');
+        let isResizing = false;
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            isResizing = true;
+            leftSidebar.classList.add('resizing');
+            resizeHandle.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const sidebarRect = leftSidebar.parentElement.getBoundingClientRect();
+            let newWidth = e.clientX - sidebarRect.left;
+            newWidth = Math.max(200, Math.min(500, newWidth));
+            leftSidebar.style.width = newWidth + 'px';
+            leftSidebar.classList.remove('closed');
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!isResizing) return;
+            isResizing = false;
+            leftSidebar.classList.remove('resizing');
+            resizeHandle.classList.remove('dragging');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        });
+
+        document.getElementById('toggleLeftSidebar').addEventListener('click', () => {
+            leftSidebar.classList.toggle('closed');
+        });
+        document.getElementById('restoreBtn').addEventListener('click', () => {
+            leftSidebar.classList.remove('closed');
+        });
+
+        document.getElementById('openSidebarBtn').addEventListener('click', openAiSidebar);
+        document.getElementById('closeSidebar').addEventListener('click', closeAiSidebar);
+        overlay.addEventListener('click', closeAiSidebar);
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && sidebar.classList.contains('open')) {
-                closeSidebar();
+            if (e.key === 'Escape' && aiSidebar.classList.contains('open')) {
+                closeAiSidebar();
             }
         });
 
@@ -1152,7 +1758,65 @@
             }
         });
 
+        let sqlEditor = null;
+        let isSqlResizing = false;
+
         window.addEventListener('load', async () => {
+            // Init CodeMirror
+            const textarea = document.getElementById('sqlQuery');
+            sqlEditor = CodeMirror.fromTextArea(textarea, {
+                mode: 'text/x-sql',
+                theme: 'dracula',
+                lineNumbers: true,
+                indentWithTabs: true,
+                smartIndent: true,
+                lineWrapping: true,
+                autofocus: false,
+                extraKeys: {
+                    'Ctrl-Enter': () => document.getElementById('executeSqlBtn').click(),
+                    'Cmd-Enter': () => document.getElementById('executeSqlBtn').click()
+                }
+            });
+            // resize observer to keep CodeMirror filling the wrap
+            const ro = new ResizeObserver(() => sqlEditor.refresh());
+            ro.observe(document.getElementById('sqlEditorWrap'));
+
+            // SQL section resize
+            const handle = document.getElementById('sqlResizeHandle');
+            handle.addEventListener('mousedown', (e) => {
+                isSqlResizing = true;
+                handle.classList.add('dragging');
+                document.body.style.cursor = 'row-resize';
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isSqlResizing) return;
+                const section = document.getElementById('sqlQuerySection');
+                const rect = section.parentElement.getBoundingClientRect();
+                let newHeight = e.clientY - rect.top;
+                newHeight = Math.max(150, Math.min(rect.height - 100, newHeight));
+                section.style.flex = '0 0 ' + newHeight + 'px';
+                sqlEditor.refresh();
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (!isSqlResizing) return;
+                isSqlResizing = false;
+                handle.classList.remove('dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            });
+
+            // 历史记录日期范围选择器
+            flatpickr(document.getElementById('historyDateRange'), {
+                mode: 'range',
+                locale: 'zh',
+                dateFormat: 'Y-m-d',
+                defaultDate: [new Date(Date.now() - 7 * 86400000), new Date()],
+                onChange: function() { loadQueryHistory(); }
+            });
+
             await loadDatabases();
             document.querySelector('[data-strategy="vector"]').classList.add('selected');
         });
@@ -1183,14 +1847,14 @@
                         const selected = data.databases.find(db => db.id === select.value);
                         if (selected) description.textContent = selected.description;
                         loadSchemas();
-                        loadKbStatus();
+                        loadQueryHistory();
                         selectedTable = null;
                         selectedTableInfo?.classList.remove('show');
                         if (tableSearchInput) tableSearchInput.value = '';
                     });
 
                     await loadSchemas();
-                    await loadKbStatus();
+                    await loadQueryHistory();
                 }
             } catch (error) {
                 console.error('加载数据库失败:', error);
@@ -1220,34 +1884,6 @@
             }
         }
 
-        async function loadKbStatus() {
-            const select = document.getElementById('databaseSelect');
-            const box = document.getElementById('kbStatus');
-            const db = select?.value;
-            if (!db) return;
-            
-            box.style.display = 'block';
-            box.textContent = '正在加载知识库状态...';
-            
-            try {
-                const r = await fetch(`/api/knowledge/status?db_name=${encodeURIComponent(db)}`);
-                const j = await r.json();
-                if (!r.ok) {
-                    box.textContent = j.error || '加载失败';
-                    return;
-                }
-                currentKnowledgeCount = j.row_count || 0;
-                const lines = [
-                    `数据源：${j.db_name}`,
-                    `知识库条目数：${j.row_count || 0}`,
-                    `存储方式：数据库 (knowledge.db_knowledge)`
-                ].filter(Boolean);
-                box.textContent = lines.join('\n');
-            } catch (e) {
-                box.textContent = '请求失败：' + e.message;
-            }
-        }
-
         async function loadDbTables() {
             const select = document.getElementById('databaseSelect');
             if (!select) return;
@@ -1273,8 +1909,85 @@
             }
         }
 
+        async function loadQueryHistory() {
+            const dbName = document.getElementById('databaseSelect').value;
+            const list = document.getElementById('historyList');
+            if (!dbName) { list.innerHTML = '<div class="history-empty">请先选择数据库</div>'; return; }
+
+            const rangeVal = document.getElementById('historyDateRange').value;
+            let startDate = '', endDate = '';
+            if (rangeVal) {
+                const parts = rangeVal.split(' 至 ');
+                startDate = parts[0];
+                if (parts[1]) endDate = parts[1];
+            }
+
+            list.innerHTML = '<div class="history-loading">加载中...</div>';
+            try {
+                const body = { db_name: dbName, limit: 50 };
+                if (startDate) body.start_time = startDate;
+                if (endDate) body.end_time = endDate;
+                const modeVal = document.getElementById('historyModeFilter').value;
+                if (modeVal) body.search_mode = modeVal;
+
+                const r = await fetch('/api/query_history', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.error);
+
+                const h = data.history || [];
+                if (h.length === 0) {
+                    list.innerHTML = '<div class="history-empty">暂无历史记录</div>';
+                    return;
+                }
+                list.innerHTML = h.map(item => {
+                    const status = item.execute_status;
+                    const ts = item.created_at ? item.created_at.slice(0, 19).replace('T', ' ') : '';
+                    const mode = item.search_mode === 'manual_sql' ? '手动' : item.search_mode || '';
+                    return `<div class="history-item" data-sql="${escapeAttr(item.generated_sql || item.nl_query)}">
+                        <div class="history-meta">
+                            <span class="history-status ${status}">${status === 'success' ? '✅成功' : '❌失败'}</span>
+                            <span class="history-extra">${[ts, item.result_rows != null ? item.result_rows + '行' : '', item.total_duration_ms != null ? Math.round(item.total_duration_ms) + 'ms' : '', mode].filter(Boolean).join(' | ')}</span>
+                        </div>
+                        <div class="history-sql" title="${escapeAttr(item.nl_query)}">${escapeHtml(item.nl_query)}</div>
+                    </div>`;
+                }).join('');
+
+                list.querySelectorAll('.history-item').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const sql = el.dataset.sql;
+                        let formatted = sql;
+                        try {
+                            if (typeof SqlFormatter !== 'undefined') {
+                                formatted = SqlFormatter.format(sql, { language: 'postgresql' });
+                            } else if (typeof sqlFormatter !== 'undefined') {
+                                formatted = sqlFormatter.format(sql, { language: 'postgresql' });
+                            }
+                        } catch (e) {}
+                        if (sqlEditor) {
+                            sqlEditor.setValue(formatted);
+                        } else {
+                            document.getElementById('sqlQuery').value = formatted;
+                        }
+                    });
+                });
+            } catch (e) {
+                list.innerHTML = '<div class="history-empty">加载失败: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        function escapeAttr(s) {
+            if (!s) return '';
+            return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        document.getElementById('historyFilterBtn').addEventListener('click', loadQueryHistory);
+
         document.getElementById('executeSqlBtn').addEventListener('click', async () => {
-            const sql = document.getElementById('sqlQuery').value.trim();
+            const sql = sqlEditor ? sqlEditor.getValue().trim() : document.getElementById('sqlQuery').value.trim();
             const db = document.getElementById('databaseSelect').value;
             const loading = document.getElementById('sqlLoadingIndicator');
             const resultData = document.getElementById('sharedResultData');
@@ -1321,6 +2034,7 @@
                 resultError.style.display = 'block';
             } finally {
                 loading.style.display = 'none';
+                loadQueryHistory();
             }
         });
 
@@ -1464,6 +2178,7 @@
                 submitBtn.disabled = false;
                 currentQueryAbortController = null;
                 currentQueryRequestId = null;
+                loadQueryHistory();
             }
         });
 
@@ -1503,6 +2218,59 @@
         }
 
         document.getElementById('kbManagementBtn').addEventListener('click', goToKnowledgeManagement);
+
+        document.getElementById('uploadExcelBtn').addEventListener('click', async () => {
+            const fileInput = document.getElementById('uploadFileInput');
+            const tableNameInput = document.getElementById('uploadTableName');
+            const statusDiv = document.getElementById('uploadStatus');
+            const btn = document.getElementById('uploadExcelBtn');
+            const db = document.getElementById('databaseSelect').value;
+
+            const file = fileInput.files[0];
+            if (!file) {
+                statusDiv.className = 'upload-status error';
+                statusDiv.textContent = '请选择 Excel 文件';
+                return;
+            }
+            if (!db) {
+                statusDiv.className = 'upload-status error';
+                statusDiv.textContent = '请先选择数据库';
+                return;
+            }
+
+            btn.disabled = true;
+            statusDiv.className = 'upload-status loading';
+            statusDiv.textContent = '⏳ 正在上传并导入...';
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('db_name', db);
+            formData.append('table_name', tableNameInput.value.trim());
+
+            try {
+                const resp = await fetch('/api/upload_excel', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    statusDiv.className = 'upload-status success';
+                    statusDiv.innerHTML = data.message;
+                    fileInput.value = '';
+                    tableNameInput.value = '';
+                    // 刷新表列表以显示新表
+                    await loadDbTables();
+                } else {
+                    statusDiv.className = 'upload-status error';
+                    statusDiv.textContent = '❌ ' + (data.error || '上传失败');
+                }
+            } catch (e) {
+                statusDiv.className = 'upload-status error';
+                statusDiv.textContent = '❌ 请求失败: ' + e.message;
+            } finally {
+                btn.disabled = false;
+            }
+        });
 
         document.getElementById('rebuildVectorsBtn').addEventListener('click', async () => {
             const db = document.getElementById('databaseSelect').value;
