@@ -3,6 +3,10 @@
 *.env
 knowledge_meta.json
 
+# 模型文件（本地和服务器各自下载）
+models/
+!models/.gitkeep
+
 # Python 缓存
 __pycache__/
 *.pyc
