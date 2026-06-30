@@ -2186,13 +2186,23 @@
             if (!data || data.length === 0) {
                 return '<div style="color: #666;">无数据</div>';
             }
-            
+            const pageSize = 100;
+            window._tableCache = { data, columns, pageSize };
+            return renderPage(1, data, columns, pageSize);
+        }
+
+        function renderPage(page, data, columns, pageSize) {
+            const totalPages = Math.ceil(data.length / pageSize);
+            const start = (page - 1) * pageSize;
+            const end = Math.min(start + pageSize, data.length);
+            const pageData = data.slice(start, end);
+
             let html = '<div style="overflow-x: auto;"><table>';
             html += '<thead><tr>';
             columns.forEach(col => html += `<th>${escapeHtml(col)}</th>`);
-            html += '</thead><tbody>';
-            
-            data.forEach(row => {
+            html += '</tr></thead><tbody>';
+
+            pageData.forEach(row => {
                 html += '<tr>';
                 columns.forEach(col => {
                     let val = row[col];
@@ -2202,9 +2212,28 @@
                 });
                 html += '</tr>';
             });
-            
-            html += '</tbody><tr></div>';
+
+            html += '</tbody></table></div>';
+
+            if (totalPages > 1) {
+                html += '<div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 0;font-size:12px;">';
+                html += `<button onclick="gotoPage(1)" style="padding:2px 8px;border:1px solid #ddd;border-radius:3px;background:#fff;cursor:pointer;${page<=1?'color:#ccc;cursor:not-allowed':''}" ${page<=1?'disabled':''}>首页</button>`;
+                html += `<button onclick="gotoPage(${page-1})" style="padding:2px 8px;border:1px solid #ddd;border-radius:3px;background:#fff;cursor:pointer;${page<=1?'color:#ccc;cursor:not-allowed':''}" ${page<=1?'disabled':''}>上一页</button>`;
+                html += `<span>第 ${page}/${totalPages} 页，共 ${data.length} 条</span>`;
+                html += `<button onclick="gotoPage(${page+1})" style="padding:2px 8px;border:1px solid #ddd;border-radius:3px;background:#fff;cursor:pointer;${page>=totalPages?'color:#ccc;cursor:not-allowed':''}" ${page>=totalPages?'disabled':''}>下一页</button>`;
+                html += `<button onclick="gotoPage(${totalPages})" style="padding:2px 8px;border:1px solid #ddd;border-radius:3px;background:#fff;cursor:pointer;${page>=totalPages?'color:#ccc;cursor:not-allowed':''}" ${page>=totalPages?'disabled':''}>末页</button>`;
+                html += '</div>';
+            }
             return html;
+        }
+
+        function gotoPage(page) {
+            const cache = window._tableCache;
+            if (!cache) return;
+            const totalPages = Math.ceil(cache.data.length / cache.pageSize);
+            if (page < 1 || page > totalPages) return;
+            const el = document.getElementById('sharedResultData');
+            if (el) el.innerHTML = renderPage(page, cache.data, cache.columns, cache.pageSize);
         }
 
         function escapeHtml(str) {
