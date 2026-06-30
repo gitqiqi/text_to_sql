@@ -2,6 +2,7 @@
 import os
 import math
 import time
+import logging
 from datetime import datetime, timedelta
 from flask import render_template, request, jsonify
 import pandas as pd
@@ -10,6 +11,8 @@ from werkzeug.utils import secure_filename
 from . import main_bp
 from config import get_available_databases
 from core import (
+
+aisql_logger = logging.getLogger("aisql")
     DatabaseManager, KnowledgeBase, SQLKnowledgeRepo, TextToSQLConverter,
     monitor_function, _nl_query_limiter, insert_query_log,
 )
@@ -254,12 +257,12 @@ def handle_nl_query():
         top_k_tables = data.get('top_k_tables', 10)
         embedding_provider = data.get('embedding_provider', '').strip() or None
 
-        print(f"\n{'='*60}")
-        print(f"📨 查询: {db_name} - {data['nl_query'][:100]}...")
-        print(f"   request_id: {request_id}")
-        print(f"   向量检索: {use_vector_search}, 指定表: {selected_table}, schema: {schema_name}")
-        print(f"   向量模型: {embedding_provider or '默认'}")
-        print(f"{'='*60}")
+        aisql_logger.info("=" * 60)
+        aisql_logger.info("查询 | db=%s | request_id=%s", db_name, request_id)
+        aisql_logger.info("用户问题: %s", data['nl_query'][:200])
+        aisql_logger.info("向量检索=%s | 指定表=%s | schema=%s | 向量模型=%s",
+                          use_vector_search, selected_table, schema_name,
+                          embedding_provider or '默认')
 
         converter = TextToSQLConverter(db_name)
 
@@ -275,7 +278,8 @@ def handle_nl_query():
         )
 
         elapsed = (time.time() - start_time) * 1000
-        print(f"✅ 查询完成，总耗时: {elapsed:.2f} ms")
+        aisql_logger.info("完成 | 耗时=%.0fms | 行数=%s | SQL: %s",
+                          elapsed, len(result), sql[:300])
 
         MAX_DISPLAY_ROWS = 500
         total_rows = len(result)
@@ -292,10 +296,10 @@ def handle_nl_query():
             'status': 'success'
         })
     except CancelledError as e:
-        print(f"⛔ 查询被用户取消: {request_id}")
+        aisql_logger.warning("取消 | request_id=%s", request_id)
         return jsonify({'error': '查询已取消', 'status': 'cancelled', 'request_id': request_id}), 499
     except Exception as e:
-        print(f"❌ 失败: {str(e)}")
+        aisql_logger.error("失败 | request_id=%s | error=%s", request_id, str(e))
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e), 'status': 'error', 'request_id': request_id}), 500
