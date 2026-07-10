@@ -387,15 +387,16 @@ class KnowledgeBase:
                 row = result.fetchone()
 
             schema_changed = row is None or row[0] != current_fingerprint
+            providers = [p.strip() for p in os.getenv('VECTOR_MONITOR_PROVIDERS', os.getenv('EMBEDDING_PROVIDER', 'local')).split(',') if p.strip()]
+
             if schema_changed:
-                print(f"   🔄 [{self.db_name}] {'首次建立' if row is None else '表结构变化，'}两个模型都重建")
-                # 对两个模型都跑全量重建
-                self._rebuild_vectors(table_records, vector_texts, 'local')
-                self._rebuild_vectors(table_records, vector_texts, 'api')
+                print(f"   🔄 [{self.db_name}] {'首次建立' if row is None else '表结构变化，'}重建向量: {', '.join(providers)}")
+                for provider in providers:
+                    self._rebuild_vectors(table_records, vector_texts, provider)
             else:
-                print(f"   ✅ [{self.db_name}] 表结构无变化，按列检查空值")
-                self._check_provider_vectors(table_records, vector_texts, 'local')
-                self._check_provider_vectors(table_records, vector_texts, 'api')
+                print(f"   ✅ [{self.db_name}] 表结构无变化，按列检查空值: {', '.join(providers)}")
+                for provider in providers:
+                    self._check_provider_vectors(table_records, vector_texts, provider)
 
             # 补填知识库/名词的空向量（新增的数据）
             self._fill_missing_knowledge_vectors()
