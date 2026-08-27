@@ -1,14 +1,23 @@
 # blueprints/knowledge.py
 from flask import render_template, request, jsonify
 from . import knowledge_bp
-from core import KnowledgeBase, SQLKnowledgeRepo, GlossaryRepo
-from core.embedding_client import get_embedding_model
+from core import KnowledgeBase, SQLKnowledgeRepo, GlossaryRepo, get_current_user, public_user_payload
+from core.embedding_client import iter_embedding_models
+
+
+def _sync_item_vectors(db_name: str, item_id: int, payload: tuple[str, ...], saver, error_label: str):
+    try:
+        kb = KnowledgeBase(db_name)
+        for _, model in iter_embedding_models():
+            saver(kb, model, item_id, *payload)
+    except Exception as ve:
+        print(f"   ⚠️ {error_label}向量同步失败: {ve}")
 
 
 @knowledge_bp.route('/management')
 def knowledge_management():
     """知识库管理页面"""
-    return render_template('knowledge_management.html')
+    return render_template('knowledge_management.html', current_user=public_user_payload(get_current_user()))
 
 
 @knowledge_bp.route('/api/list', methods=['GET'])
@@ -19,7 +28,7 @@ def get_knowledge_list():
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = SQLKnowledgeRepo(db_name)
+        repo = SQLKnowledgeRepo(db_name, current_user=get_current_user())
         knowledge = repo.list()
         return jsonify({'knowledge': knowledge, 'status': 'success'})
     except Exception as e:
@@ -42,16 +51,15 @@ def add_knowledge():
         return jsonify({'error': 'SQL不能为空'}), 400
 
     try:
-        repo = SQLKnowledgeRepo(db_name)
+        repo = SQLKnowledgeRepo(db_name, current_user=get_current_user())
         result = repo.add(question, sql)
-        # 同步更新向量（两个模型）
-        try:
-            kb = KnowledgeBase(db_name)
-            for provider in ('local', 'api'):
-                model = get_embedding_model(provider)
-                kb.save_single_knowledge_vector(model, result['id'], question, sql)
-        except Exception as ve:
-            print(f"   ⚠️ 知识条目向量同步失败: {ve}")
+        _sync_item_vectors(
+            db_name,
+            result['id'],
+            (question, sql),
+            KnowledgeBase.save_single_knowledge_vector,
+            '知识条目',
+        )
         return jsonify({'status': 'success', 'id': result['id']})
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -69,17 +77,16 @@ def update_knowledge(knowledge_id):
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = SQLKnowledgeRepo(db_name)
+        repo = SQLKnowledgeRepo(db_name, current_user=get_current_user())
         success = repo.update(knowledge_id, question, sql)
         if success:
-            # 同步更新向量（两个模型）
-            try:
-                kb = KnowledgeBase(db_name)
-                for provider in ('local', 'api'):
-                    model = get_embedding_model(provider)
-                    kb.save_single_knowledge_vector(model, knowledge_id, question, sql)
-            except Exception as ve:
-                print(f"   ⚠️ 知识条目向量同步失败: {ve}")
+            _sync_item_vectors(
+                db_name,
+                knowledge_id,
+                (question, sql),
+                KnowledgeBase.save_single_knowledge_vector,
+                '知识条目',
+            )
             return jsonify({'status': 'success'})
         else:
             return jsonify({'error': '知识条目不存在'}), 404
@@ -95,7 +102,7 @@ def delete_knowledge(knowledge_id):
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = SQLKnowledgeRepo(db_name)
+        repo = SQLKnowledgeRepo(db_name, current_user=get_current_user())
         success = repo.delete(knowledge_id)
         if success:
             return jsonify({'status': 'success'})
@@ -113,7 +120,7 @@ def get_status():
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = SQLKnowledgeRepo(db_name)
+        repo = SQLKnowledgeRepo(db_name, current_user=get_current_user())
         knowledge = repo.list()
         return jsonify({
             'status': 'success',
@@ -185,7 +192,7 @@ def get_glossary_list():
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = GlossaryRepo(db_name)
+        repo = GlossaryRepo(db_name, current_user=get_current_user())
         glossary = repo.list()
         return jsonify({'glossary': glossary, 'status': 'success'})
     except Exception as e:
@@ -208,16 +215,15 @@ def add_glossary():
         return jsonify({'error': '释义不能为空'}), 400
 
     try:
-        repo = GlossaryRepo(db_name)
+        repo = GlossaryRepo(db_name, current_user=get_current_user())
         result = repo.add(term, definition)
-        # 同步更新向量（两个模型）
-        try:
-            kb = KnowledgeBase(db_name)
-            for provider in ('local', 'api'):
-                model = get_embedding_model(provider)
-                kb.save_single_glossary_vector(model, result['id'], term, definition)
-        except Exception as ve:
-            print(f"   ⚠️ 业务名词向量同步失败: {ve}")
+        _sync_item_vectors(
+            db_name,
+            result['id'],
+            (term, definition),
+            KnowledgeBase.save_single_glossary_vector,
+            '业务名词',
+        )
         return jsonify({'status': 'success', 'id': result['id']})
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -235,17 +241,16 @@ def update_glossary(glossary_id):
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = GlossaryRepo(db_name)
+        repo = GlossaryRepo(db_name, current_user=get_current_user())
         success = repo.update(glossary_id, term, definition)
         if success:
-            # 同步更新向量（两个模型）
-            try:
-                kb = KnowledgeBase(db_name)
-                for provider in ('local', 'api'):
-                    model = get_embedding_model(provider)
-                    kb.save_single_glossary_vector(model, glossary_id, term, definition)
-            except Exception as ve:
-                print(f"   ⚠️ 业务名词向量同步失败: {ve}")
+            _sync_item_vectors(
+                db_name,
+                glossary_id,
+                (term, definition),
+                KnowledgeBase.save_single_glossary_vector,
+                '业务名词',
+            )
             return jsonify({'status': 'success'})
         else:
             return jsonify({'error': '业务名词不存在'}), 404
@@ -261,7 +266,7 @@ def delete_glossary(glossary_id):
         return jsonify({'error': 'missing db_name'}), 400
 
     try:
-        repo = GlossaryRepo(db_name)
+        repo = GlossaryRepo(db_name, current_user=get_current_user())
         success = repo.delete(glossary_id)
         if success:
             return jsonify({'status': 'success'})

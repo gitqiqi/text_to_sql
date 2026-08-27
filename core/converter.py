@@ -8,7 +8,9 @@ import pandas as pd
 
 from .cancellation import CancellationToken, CancelledError
 from .db_manager import DatabaseManager
-from .embedding_client import get_embedding_model
+from .embedding_client import iter_embedding_models
+from .book_code import BookKnowledgeStore
+from .dataworks import DataWorksKnowledgeStore
 from .knowledge import KnowledgeBase
 from .llm_client import DouBaoClient
 from .query_log import insert_query_log
@@ -18,12 +20,15 @@ from .vector_search import TableSchemaSearcher
 
 
 class TextToSQLConverter:
-    def __init__(self, db_name: str):
+    def __init__(self, db_name: str, current_user: Optional[dict] = None):
         self.db_name = db_name
+        self.current_user = current_user
         self.db = DatabaseManager(db_name)
         self.kb = KnowledgeBase(db_name)
-        self.sql_repo = SQLKnowledgeRepo(db_name)
-        self.glossary_repo = GlossaryRepo(db_name)
+        self.dataworks_store = DataWorksKnowledgeStore(db_name, ensure_schema=False)
+        self.book_store = BookKnowledgeStore(db_name, ensure_schema=False)
+        self.sql_repo = SQLKnowledgeRepo(db_name, current_user=current_user)
+        self.glossary_repo = GlossaryRepo(db_name, current_user=current_user)
         api_key = os.getenv("ARK_API_KEY")
         if not api_key:
             raise ValueError("ARK_API_KEY environment variable is required")
@@ -40,6 +45,7 @@ class TextToSQLConverter:
         schema_filter: Optional[str] = None,
         cancel_token: Optional[CancellationToken] = None,
         embedding_provider: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> Tuple[str, pd.DataFrame]:
         print(f"\n📝 查询: {nl_query}")
         if schema_filter:
@@ -66,6 +72,8 @@ class TextToSQLConverter:
             'completion_tokens': 0,
             'total_tokens': 0,
             'llm_calls': 0,
+            'request_id': request_id,
+            'action_type': 'nl_query',
         }
 
         sql = None
@@ -122,10 +130,30 @@ class TextToSQLConverter:
 
             knowledge_json = self.sql_repo.list()
             glossary = self.glossary_repo.list()
+            dataworks_knowledge = self.dataworks_store.search(nl_query, top_k=5, provider=embedding_provider)
+            code_search_mode = 'selected_table' if selected_table else ('vector' if use_vector_search else 'all')
+            book_table_hints = []
+            if selected_table:
+                book_table_hints.append(selected_table)
+            elif best_tables:
+                for table in best_tables:
+                    table_name = table.get('table_name')
+                    schema_name_hint = table.get('schema')
+                    if table_name:
+                        book_table_hints.append(f"{schema_name_hint}.{table_name}" if schema_name_hint else table_name)
+            book_knowledge = self.book_store.search(
+                nl_query,
+                top_k=5,
+                provider=embedding_provider,
+                search_mode=code_search_mode,
+                table_hints=book_table_hints,
+            )
 
             t_llm_start = time.time()
             sql = self.llm.generate_text(nl_query, formatted_tables, knowledge_json, glossary,
                                          vector_results=best_tables,
+                                         dataworks_knowledge=dataworks_knowledge,
+                                         book_knowledge=book_knowledge,
                                          cancel_token=cancel_token)
             log_data['llm_duration_ms'] = (time.time() - t_llm_start) * 1000
             log_data['generated_sql'] = sql
@@ -142,7 +170,7 @@ class TextToSQLConverter:
 
             _check_cancel()
             t_exec_start = time.time()
-            result = self.db.execute_sql(sql)
+            result = self.db.execute_sql(sql, cancel_token=cancel_token)
             log_data['sql_exec_duration_ms'] = (time.time() - t_exec_start) * 1000
             log_data['result_rows'] = len(result) if result is not None else 0
             log_data['execute_status'] = 'success'
@@ -194,16 +222,14 @@ def precompute_all_embeddings(db_name: str = None, force_rebuild: bool = False):
             if vectors_count > 0 and not force_rebuild:
                 # 增量同步两个模型列
                 print(f"   ├─ Hologres 中已有 {vectors_count} 个向量，走增量同步（使用 --force 可强制全量重建）")
-                for provider in ('local', 'api'):
+                for provider, model in iter_embedding_models():
                     print(f"   ├─ 加载向量模型 ({provider})...")
-                    model = get_embedding_model(provider)
                     kb.save_embeddings_incrementally(model, table_records, vector_texts)
                 continue
 
             print(f"   ├─ 全量生成向量中（两个模型）...")
-            for provider in ('local', 'api'):
+            for provider, model in iter_embedding_models():
                 print(f"   ├─ 加载向量模型 ({provider})...")
-                model = get_embedding_model(provider)
 
                 batch_size = 50
                 all_embeddings = []

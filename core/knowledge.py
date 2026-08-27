@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from config import get_database_config
 from .db_manager import DatabasePoolManager
+from .embedding_client import iter_embedding_models
 from .utils import _schema_cache, _vectors_cache, EMBEDDING_DIM, monitor_function
 
 
@@ -28,6 +29,11 @@ class KnowledgeBase:
     @staticmethod
     def _embedding_col(provider: str) -> str:
         return 'doubao_embedding' if provider == 'api' else 'local_embedding'
+
+    @staticmethod
+    def _embedding_provider_from_model(model) -> str:
+        name = getattr(model, 'name', '')
+        return 'api' if str(name).startswith('api:') else 'local'
 
     # ========== 向量操作方法 ==========
 
@@ -128,9 +134,7 @@ class KnowledgeBase:
         Returns:
             统计字典：{'new': N, 'changed': N, 'unchanged': N, 'removed': N}
         """
-        embedding_col = self._embedding_col(
-            'api' if (hasattr(model, 'name') and model.name.startswith('api:')) else 'local'
-        )
+        embedding_col = self._embedding_col(self._embedding_provider_from_model(model))
         stats = {'new': 0, 'changed': 0, 'unchanged': 0, 'removed': 0}
 
         # 1. 加载现有 (schema, table) -> (text_hash, id, has_col) 快照
@@ -319,11 +323,9 @@ class KnowledgeBase:
     def _fill_missing_knowledge_vectors(self):
         """补填知识库/名词中两个模型列 embedding 为空的记录"""
         self._ensure_embedding_columns()
-        from .embedding_client import get_embedding_model
 
-        for provider in ('local', 'api'):
+        for provider, model in iter_embedding_models():
             col = self._embedding_col(provider)
-            model = get_embedding_model(provider)
 
             for table, id_field, text_fields, save_fn in [
                 ('knowledge.db_knowledge', 'id', ('question', 'sql'),
@@ -549,9 +551,7 @@ class KnowledgeBase:
         """通用：对双列 embedding 的表做向量检索（numpy fallback）"""
         from .embedding_client import get_embedding_model
         model = get_embedding_model(provider)
-        col = self._embedding_col(
-            'api' if (hasattr(model, 'name') and model.name.startswith('api:')) else 'local'
-        )
+        col = self._embedding_col(self._embedding_provider_from_model(model))
 
         with self.engine.connect() as conn:
             rows = conn.execute(text(f"""
@@ -702,9 +702,7 @@ class KnowledgeBase:
     def save_single_knowledge_vector(self, model, knowledge_id: int, question: str, sql: str):
         """对单条知识条目生成向量并直接更新到 db_knowledge 表"""
         self._ensure_embedding_columns()
-        col = self._embedding_col(
-            'api' if (hasattr(model, 'name') and model.name.startswith('api:')) else 'local'
-        )
+        col = self._embedding_col(self._embedding_provider_from_model(model))
         vector_text = f"问题: {question}\nSQL: {sql}"
         embedding = model.encode([vector_text], convert_to_numpy=True, normalize_embeddings=True)[0]
         embedding_list = embedding.tolist()
@@ -727,9 +725,7 @@ class KnowledgeBase:
     def save_single_glossary_vector(self, model, glossary_id: int, term: str, definition: str):
         """对单条业务名词生成向量并直接更新到 business_glossary 表"""
         self._ensure_embedding_columns()
-        col = self._embedding_col(
-            'api' if (hasattr(model, 'name') and model.name.startswith('api:')) else 'local'
-        )
+        col = self._embedding_col(self._embedding_provider_from_model(model))
         vector_text = f"{term}: {definition}"
         embedding = model.encode([vector_text], convert_to_numpy=True, normalize_embeddings=True)[0]
         embedding_list = embedding.tolist()
@@ -754,18 +750,19 @@ class KnowledgeBase:
         self._ensure_embedding_columns()
         from .repos import SQLKnowledgeRepo, GlossaryRepo
 
-        for provider in ('local', 'api'):
-            from .embedding_client import get_embedding_model
-            model = get_embedding_model(provider)
+        knowledge_repo = SQLKnowledgeRepo(self.db_name)
+        glossary_repo = GlossaryRepo(self.db_name)
+        knowledge_items = knowledge_repo.list()
+        glossary_items = glossary_repo.list()
+
+        for provider, model in iter_embedding_models():
             print(f"   ├─ 重建知识库/名词向量 (模型: {model.name})")
 
-            knowledge_repo = SQLKnowledgeRepo(self.db_name)
-            for item in knowledge_repo.list():
+            for item in knowledge_items:
                 self.save_single_knowledge_vector(model, item['id'], item['question'], item['sql'])
             print(f"   ✅ 已更新知识库向量 ({provider})")
 
-            glossary_repo = GlossaryRepo(self.db_name)
-            for item in glossary_repo.list():
+            for item in glossary_items:
                 self.save_single_glossary_vector(model, item['id'], item['term'], item['definition'])
             print(f"   ✅ 已更新业务名词向量 ({provider})")
 
@@ -1144,4 +1141,3 @@ def start_vector_monitor(db_names: List[str]):
         _monitor_thread = threading.Thread(target=monitor_loop, daemon=True, name="VectorMonitor")
         _monitor_thread.start()
         print(f"   ✅ 向量监控线程已启动（监控 {len(db_names)} 个数据库，每天 1:00 自动更新）")
-

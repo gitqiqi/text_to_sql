@@ -58,6 +58,45 @@
             background: #5568d3;
             transform: translateY(-2px);
         }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .user-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            max-width: 280px;
+            padding: 8px 12px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            color: #374151;
+            background: #f9fafb;
+            font-size: 13px;
+        }
+        .user-chip strong,
+        .user-chip span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .btn-logout {
+            background: white;
+            color: #374151;
+            border: 1px solid #d1d5db;
+            padding: 10px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .btn-logout:hover {
+            border-color: #ef4444;
+            color: #b91c1c;
+        }
         .database-bar {
             background: white;
             padding: 16px 24px;
@@ -497,6 +536,9 @@
                 gap: 15px;
                 text-align: center;
             }
+            .header-actions {
+                justify-content: center;
+            }
             .sql-cell {
                 max-width: 200px;
             }
@@ -521,7 +563,18 @@
     <div class="container">
         <div class="header">
             <h1>📚 <span>知识库管理</span></h1>
-            <button class="btn-back" onclick="goBack()">← 返回主页</button>
+            <div class="header-actions">
+                {% if current_user %}
+                <div class="user-chip">
+                    <strong>{{ current_user.user_name or current_user.mobile or current_user.admin_id }}</strong>
+                    {% if current_user.role_name %}
+                    <span>{{ current_user.role_name }}</span>
+                    {% endif %}
+                </div>
+                {% endif %}
+                <button class="btn-logout" id="logoutBtn" type="button">退出</button>
+                <button class="btn-back" onclick="goBack()">← 返回主页</button>
+            </div>
         </div>
 
         <div class="database-bar">
@@ -700,6 +753,16 @@
     </div>
 
     <script>
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = async (resource, init) => {
+            const response = await nativeFetch(resource, init);
+            if (response.status === 401) {
+                const next = encodeURIComponent(window.location.pathname + window.location.search);
+                window.location.href = `/login?next=${next}`;
+            }
+            return response;
+        };
+
         let currentEditId = null;
         let currentGlossaryEditId = null;
         let allKnowledgeData = [];
@@ -712,6 +775,10 @@
             bindSearchEvents();
             bindTabEvents();
             bindGlossaryDrawerEvents();
+            document.getElementById('logoutBtn')?.addEventListener('click', async () => {
+                await fetch('/api/logout', { method: 'POST' });
+                window.location.href = '/login';
+            });
         });
 
         function bindTabEvents() {

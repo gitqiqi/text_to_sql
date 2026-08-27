@@ -1,5 +1,4 @@
 # core/vector_search.py - 表结构向量检索（带模型缓存）
-import os
 import threading
 import time
 from typing import Dict, List, Optional
@@ -8,7 +7,7 @@ import numpy as np
 
 from .embedding_client import get_embedding_model
 from .knowledge import KnowledgeBase
-from .utils import monitor_function
+from .utils import EMBEDDING_PROVIDER, monitor_function
 
 
 class TableSchemaSearcher:
@@ -27,11 +26,6 @@ class TableSchemaSearcher:
         return cls._models[provider]
 
     @classmethod
-    def _get_embedding_col(cls, provider: str = None) -> str:
-        p = provider or os.getenv('EMBEDDING_PROVIDER', 'local')
-        return 'doubao_embedding' if p == 'api' else 'local_embedding'
-
-    @classmethod
     @monitor_function
     def search(cls, db_name: str, query: str, top_k: int = 10,
                kb: KnowledgeBase = None, use_holo_index: bool = True,
@@ -42,7 +36,7 @@ class TableSchemaSearcher:
         if not kb:
             kb = KnowledgeBase(db_name)
 
-        embedding_col = cls._get_embedding_col(embedding_provider)
+        embedding_col = KnowledgeBase._embedding_col(embedding_provider or EMBEDDING_PROVIDER)
 
         if use_holo_index:
             model = cls._get_model(embedding_provider)

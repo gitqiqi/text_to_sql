@@ -1,12 +1,13 @@
 # core/db_manager.py - 数据库连接池与执行器
 import threading
-from typing import Dict
+from typing import Dict, Optional
 from urllib.parse import quote_plus
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 
 from config import get_database_config
+from .cancellation import CancelledError, CancellationToken
 from .utils import (
     POOL_SIZE,
     MAX_OVERFLOW,
@@ -70,7 +71,7 @@ class DatabaseManager:
         self.engine = DatabasePoolManager.get_engine(db_name)
 
     @monitor_function
-    def execute_sql(self, sql: str) -> pd.DataFrame:
+    def execute_sql(self, sql: str, cancel_token: Optional[CancellationToken] = None) -> pd.DataFrame:
         if not sql:
             raise ValueError("SQL语句为空")
 
@@ -90,10 +91,42 @@ class DatabaseManager:
                 except Exception:
                     pass
 
-            result = conn.execute(text(cleaned))
-            df = pd.DataFrame(result.fetchall(), columns=list(result.keys()))
+            raw_connection = None
+            if cancel_token is not None:
+                try:
+                    raw_connection = getattr(conn.connection, 'driver_connection', None) or getattr(conn.connection, 'connection', None)
+                except Exception:
+                    raw_connection = None
+                if raw_connection is not None and hasattr(raw_connection, 'cancel'):
+                    cancel_token.set_cancel_hook(lambda raw_conn=raw_connection: raw_conn.cancel())
 
-            for col in df.columns:
-                if pd.api.types.is_datetime64_any_dtype(df[col]):
-                    df[col] = df[col].astype(str)
-        return df
+            try:
+                if cancel_token is not None:
+                    cancel_token.raise_if_cancelled()
+                result = conn.execution_options(stream_results=True).execute(text(cleaned))
+                columns = list(result.keys())
+                rows = []
+
+                while True:
+                    if cancel_token is not None:
+                        cancel_token.raise_if_cancelled()
+                    batch = result.fetchmany(1000)
+                    if not batch:
+                        break
+                    rows.extend(batch)
+
+                df = pd.DataFrame(rows, columns=columns)
+
+                for col in df.columns:
+                    if pd.api.types.is_datetime64_any_dtype(df[col]):
+                        df[col] = df[col].astype(str)
+                return df
+            except CancelledError:
+                raise
+            except Exception as e:
+                if cancel_token is not None and cancel_token.is_cancelled():
+                    raise CancelledError("查询已被用户取消") from e
+                raise
+            finally:
+                if cancel_token is not None:
+                    cancel_token.set_cancel_hook(None)

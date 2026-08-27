@@ -1,6 +1,6 @@
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Union
+from concurrent.futures import ThreadPoolExecutor
+from typing import Iterable, Iterator, List, Union
 
 import numpy as np
 import requests
@@ -98,3 +98,19 @@ def get_embedding_model(provider: str = None) -> BaseEmbeddingModel:
         return ApiEmbeddingModel()
     print(f"📦 向量模型: 本地 ({SENTENCE_TRANSFORMER_MODEL})")
     return LocalEmbeddingModel()
+
+
+def iter_embedding_models(providers: Iterable[str] | None = None) -> Iterator[tuple[str, BaseEmbeddingModel]]:
+    """按 provider 顺序返回已加载的向量模型。"""
+    if providers is None:
+        provider_list: Iterable[str] = ('local', 'api')
+    elif isinstance(providers, str):
+        provider_list = (providers,)
+    else:
+        provider_list = providers
+
+    for provider in provider_list:
+        provider_name = str(provider or '').strip()
+        if not provider_name:
+            continue
+        yield provider_name, get_embedding_model(provider_name)

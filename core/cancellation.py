@@ -1,7 +1,7 @@
 # core/cancellation.py - 查询取消管理
 import threading
 import uuid
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 
 class CancelledError(Exception):
@@ -13,9 +13,36 @@ class CancellationToken:
     """单个查询的取消令牌"""
     def __init__(self):
         self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._cancel_hook: Optional[Callable[[], None]] = None
+        self._hook_called = False
+
+    def set_cancel_hook(self, hook: Optional[Callable[[], None]]):
+        """设置被取消时执行的钩子。若已取消，则立即触发一次。"""
+        call_now = False
+        with self._lock:
+            self._cancel_hook = hook
+            if hook is not None and self._event.is_set() and not self._hook_called:
+                self._hook_called = True
+                call_now = True
+        if call_now:
+            try:
+                hook()
+            except Exception:
+                pass
 
     def cancel(self):
         self._event.set()
+        hook = None
+        with self._lock:
+            if self._cancel_hook is not None and not self._hook_called:
+                self._hook_called = True
+                hook = self._cancel_hook
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                pass
 
     def is_cancelled(self) -> bool:
         return self._event.is_set()

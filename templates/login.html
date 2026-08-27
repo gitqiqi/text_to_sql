@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - Text2SQL</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            background: #f4f6fb;
+            color: #1f2937;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+        }
+
+        .login-shell {
+            width: min(420px, 100%);
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            box-shadow: 0 18px 50px rgba(31, 41, 55, 0.12);
+            padding: 32px;
+        }
+
+        .brand {
+            margin-bottom: 28px;
+        }
+
+        .brand h1 {
+            margin: 0 0 8px;
+            font-size: 28px;
+            line-height: 1.2;
+            color: #111827;
+        }
+
+        .brand p {
+            margin: 0;
+            color: #6b7280;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 650;
+            color: #374151;
+        }
+
+        input {
+            width: 100%;
+            height: 44px;
+            padding: 0 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font: inherit;
+            color: #111827;
+            background: #ffffff;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+        }
+
+        .login-btn {
+            width: 100%;
+            height: 44px;
+            border: none;
+            border-radius: 8px;
+            background: #4f46e5;
+            color: #ffffff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.2s;
+        }
+
+        .login-btn:hover {
+            background: #4338ca;
+        }
+
+        .login-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.7;
+            transform: none;
+        }
+
+        .message {
+            min-height: 20px;
+            margin: 0 0 16px;
+            font-size: 14px;
+            color: #b91c1c;
+        }
+
+        .meta {
+            margin-top: 18px;
+            font-size: 12px;
+            color: #9ca3af;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <main class="login-shell">
+        <div class="brand">
+            <h1>Text2SQL 登录</h1>
+            <p>使用平台账号查看自己的查询记录和知识内容。</p>
+        </div>
+
+        <form id="loginForm">
+            <p class="message" id="message"></p>
+            <div class="form-group">
+                <label for="loginName">账号</label>
+                <input id="loginName" name="login_name" autocomplete="username" placeholder="admin / 手机号 / 工号" required>
+            </div>
+            <div class="form-group">
+                <label for="password">密码</label>
+                <input id="password" name="password" type="password" autocomplete="current-password" required>
+            </div>
+            <button class="login-btn" id="loginBtn" type="submit">登录</button>
+        </form>
+        <div class="meta">管理员账号由 APP_ADMIN_PASSWORD 初始化</div>
+    </main>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const message = document.getElementById('message');
+        const loginBtn = document.getElementById('loginBtn');
+
+        function nextUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const raw = params.get('next') || '/';
+            if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
+            return raw;
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            message.textContent = '';
+            loginBtn.disabled = true;
+            loginBtn.textContent = '登录中...';
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        login_name: document.getElementById('loginName').value.trim(),
+                        password: document.getElementById('password').value,
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || '登录失败');
+                }
+                window.location.href = nextUrl();
+            } catch (error) {
+                message.textContent = error.message;
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = '登录';
+            }
+        });
+    </script>
+</body>
+</html>

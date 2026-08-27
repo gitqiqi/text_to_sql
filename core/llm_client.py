@@ -36,6 +36,8 @@ class DouBaoClient:
     def generate_text(self, nl_query: str, formatted_tables: str, knowledge_json: Any,
                       glossary: Optional[List[Dict]] = None,
                       vector_results: Optional[List[Dict]] = None,
+                      dataworks_knowledge: Optional[List[Dict]] = None,
+                      book_knowledge: Optional[List[Dict]] = None,
                       cancel_token: Optional[CancellationToken] = None) -> str:
         """生成 SQL，支持拆分长表结构进行多轮对话
 
@@ -46,14 +48,25 @@ class DouBaoClient:
 
         formatted_knowledge = self._format_knowledge(knowledge_json)
         formatted_glossary = self._format_glossary(glossary or [])
+        formatted_dataworks = self._format_dataworks(dataworks_knowledge or [])
+        formatted_book = self._format_book_knowledge(book_knowledge or [])
 
         print(f"    ├─ 表结构信息总长度: {len(formatted_tables)} 字符")
         print(f"    ├─ 知识库示例长度: {len(formatted_knowledge)} 字符")
         print(f"    ├─ 业务名词数量: {len(glossary or [])}")
+        print(f"    ├─ DataWorks 节点知识长度: {len(formatted_dataworks)} 字符")
+        print(f"    ├─ 仓库代码知识长度: {len(formatted_book)} 字符")
 
         if len(formatted_tables) <= MAX_TABLE_LENGTH_PER_BATCH:
             print(f"    ├─ 表结构未超长，直接处理")
-            return self._generate_single_request(nl_query, formatted_tables, formatted_knowledge, formatted_glossary)
+            return self._generate_single_request(
+                nl_query,
+                formatted_tables,
+                formatted_knowledge,
+                formatted_glossary,
+                formatted_dataworks,
+                formatted_book,
+            )
 
         print(f"    ├─ 表结构超长，开始拆分（每批最大 {MAX_TABLE_LENGTH_PER_BATCH} 字符）")
         table_batches = self._split_tables(formatted_tables)
@@ -144,7 +157,14 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
                 # 关键：用 best_sql 涉及的表的完整 schema，而不是把全部 schema 截断
                 relevant_schema = extract_relevant_schema_blocks(best_sql, formatted_tables)
                 print(f"    ├─ 精简 schema 长度: {len(relevant_schema)} 字符（原 {len(formatted_tables)} 字符）")
-                fallback = self._generate_single_request(nl_query, relevant_schema, formatted_knowledge, formatted_glossary)
+                fallback = self._generate_single_request(
+                    nl_query,
+                    relevant_schema,
+                    formatted_knowledge,
+                    formatted_glossary,
+                    formatted_dataworks,
+                    formatted_book,
+                )
                 if fallback:
                     return fallback
                 print(f"    ⚠️ 单批回退失败，仍返回分批 SQL（由数据库报错兜底）")
@@ -153,7 +173,9 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
         print(f"    ⚠️ 所有批次均未找到有效SQL")
         return ""
 
-    def _generate_single_request(self, nl_query: str, formatted_tables: str, formatted_knowledge: str, formatted_glossary: str = "") -> str:
+    def _generate_single_request(self, nl_query: str, formatted_tables: str, formatted_knowledge: str,
+                                 formatted_glossary: str = "", formatted_dataworks: str = "",
+                                 formatted_book: str = "") -> str:
         """单次请求生成SQL"""
 
         if len(formatted_tables) > MAX_TABLE_LENGTH_PER_BATCH:
@@ -248,6 +270,12 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
 
 ## 业务名词解释（必读，生成 SQL 前先理解这些业务术语）：
 {formatted_glossary}
+
+## DataWorks 节点代码与上游血缘（按问题检索到的相关节点）：
+{formatted_dataworks}
+
+## 仓库代码知识（函数/类/文件级上下文，按问题检索到的相关代码）：
+{formatted_book}
 
 ## 知识库：
 {formatted_knowledge}"""
@@ -477,3 +505,78 @@ Hologres 对类型匹配非常严格，类型不一致会直接报错。生成 S
             if term and definition:
                 items.append(f"- **{term}**：{definition}")
         return "\n".join(items) if items else "无业务名词配置"
+
+    def _format_dataworks(self, dataworks_nodes: List[Dict]) -> str:
+        """格式化 DataWorks 节点代码知识"""
+        if not dataworks_nodes:
+            return "无可用 DataWorks 节点知识"
+
+        blocks = []
+        for item in dataworks_nodes[:5]:
+            name = str(item.get('node_name') or item.get('file_name') or item.get('node_key') or '').strip()
+            path = str(item.get('absolute_folder_path') or '').strip()
+            outputs = item.get('output_tables') or []
+            upstream_nodes = item.get('upstream_nodes') or []
+            upstream_tables = item.get('upstream_tables') or []
+            content = str(item.get('content') or '').strip()
+            if len(content) > 1200:
+                content = content[:1200] + '\n...(代码已截断)'
+
+            upstream_names = []
+            for node in upstream_nodes:
+                if isinstance(node, dict):
+                    upstream_name = str(node.get('node_name') or node.get('file_name') or node.get('node_id') or '').strip()
+                    if upstream_name:
+                        upstream_names.append(upstream_name)
+                else:
+                    value = str(node or '').strip()
+                    if value:
+                        upstream_names.append(value)
+
+            lines = [f"节点: {name or '未命名节点'}"]
+            if path:
+                lines.append(f"路径: {path}")
+            if outputs:
+                lines.append(f"输出表: {', '.join(str(x) for x in outputs)}")
+            if upstream_names:
+                lines.append(f"上游节点: {', '.join(dict.fromkeys(upstream_names))}")
+            if upstream_tables:
+                lines.append(f"上游表: {', '.join(str(x) for x in upstream_tables)}")
+            if content:
+                lines.append(f"代码:\n{content}")
+            blocks.append('\n'.join(lines))
+
+        return '\n\n'.join(blocks)
+
+    def _format_book_knowledge(self, book_nodes: List[Dict]) -> str:
+        """格式化仓库代码知识"""
+        if not book_nodes:
+            return "无可用仓库代码知识"
+
+        blocks = []
+        for item in book_nodes[:5]:
+            file_path = str(item.get('file_path') or '').strip()
+            qualified_name = str(item.get('qualified_name') or item.get('symbol_name') or '').strip()
+            symbol_type = str(item.get('symbol_type') or '').strip()
+            signature = str(item.get('signature') or '').strip()
+            docstring = str(item.get('docstring') or '').strip()
+            context_text = str(item.get('context_text') or item.get('code_text') or '').strip()
+            if len(context_text) > 1200:
+                context_text = context_text[:1200] + '\n...(代码已截断)'
+
+            lines = [f"文件: {file_path}" if file_path else "文件: 未知"]
+            if qualified_name:
+                lines.append(f"符号: {qualified_name}")
+            if symbol_type:
+                lines.append(f"类型: {symbol_type}")
+            if signature:
+                lines.append(f"签名: {signature}")
+            if docstring:
+                lines.append(f"说明: {docstring}")
+            if item.get('_match_reason'):
+                lines.append(f"命中原因: {item.get('_match_reason')}")
+            if context_text:
+                lines.append(f"上下文:\n{context_text}")
+            blocks.append('\n'.join(lines))
+
+        return '\n\n'.join(blocks)
