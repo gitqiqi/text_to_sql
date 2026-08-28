@@ -6,7 +6,7 @@ import math
 import re
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from io import StringIO
 from urllib.parse import quote
 from flask import render_template, request, jsonify, redirect, url_for
@@ -17,12 +17,9 @@ from werkzeug.utils import secure_filename
 from . import main_bp
 from config import (
     get_available_databases,
-    get_upload_match_config,
     get_upload_match_configs,
     get_upload_match_templates,
     normalize_upload_template_label,
-    set_upload_match_config_for_db,
-    delete_upload_match_template,
 )
 from core import (
     DatabaseManager, KnowledgeBase, SQLKnowledgeRepo, TextToSQLConverter,
@@ -40,9 +37,26 @@ from core.cancellation import registry as cancel_registry, CancelledError
 from core.db_manager import DatabasePoolManager
 from core.upload_match_template_repo import (
     delete_upload_match_template_record,
-    load_upload_match_template_audit_map,
+    load_upload_match_templates_config,
+    seed_upload_match_templates_from_config,
     upsert_upload_match_template,
 )
+
+
+def _json_safe_cell(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        value = value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 def safe_records(df: pd.DataFrame) -> list[dict]:
@@ -50,8 +64,7 @@ def safe_records(df: pd.DataFrame) -> list[dict]:
     df = df.astype(object).where(df.notna(), None)
     for col in df.columns:
         for i, val in enumerate(df[col]):
-            if isinstance(val, float) and (math.isinf(val) or math.isnan(val)):
-                df.at[i, col] = None
+            df.at[i, col] = _json_safe_cell(val)
     return df.to_dict(orient='records')
 
 
@@ -847,7 +860,7 @@ def _resolve_upload_match_plan(
         match_field_input,
     )
     tables = KnowledgeBase(db_name).get_table_list()
-    upload_match_config = match_config if isinstance(match_config, dict) else get_upload_match_config(
+    upload_match_config = match_config if isinstance(match_config, dict) else _get_upload_match_config(
         db_name,
         template_key=template_key if use_template_mode else None,
         source_table_name=source_table_name if use_template_mode else None,
@@ -1251,24 +1264,66 @@ def _current_upload_template_actor(payload: dict | None = None) -> str:
     return 'system'
 
 
-def _enrich_upload_template_audit(db_name: str, db_config: dict) -> dict:
-    db_config = dict(db_config or {})
-    audit_map = load_upload_match_template_audit_map(db_name)
-    if not audit_map:
+def _load_legacy_upload_match_config(db_name: str) -> dict:
+    legacy_config = get_upload_match_configs().get(db_name) or {}
+    return dict(legacy_config) if isinstance(legacy_config, dict) else {}
+
+
+def _load_upload_match_db_config(db_name: str, seed_from_legacy: bool = True) -> dict:
+    """业务模板以 knowledge.upload_match_template 为准，旧 JSON 只做首次迁移兜底。"""
+    try:
+        db_config = load_upload_match_templates_config(db_name)
+    except Exception as e:
+        safe_message = str(e).splitlines()[0]
+        print(f"   ⚠️ 读取数据库业务模板失败，临时使用本地 JSON 兜底: {safe_message}")
+        return _load_legacy_upload_match_config(db_name)
+
+    if db_config or not seed_from_legacy:
         return db_config
 
-    for template_key, config in list(db_config.items()):
-        if template_key == 'default' or not isinstance(config, dict):
-            continue
-        audit = audit_map.get(template_key) or {}
-        if not audit:
-            continue
-        enriched = dict(config)
-        for field in ('created_by', 'updated_by', 'created_at', 'updated_at'):
-            if not enriched.get(field) and audit.get(field):
-                enriched[field] = audit[field]
-        db_config[template_key] = enriched
-    return db_config
+    legacy_config = _load_legacy_upload_match_config(db_name)
+    if not legacy_config:
+        return {}
+
+    try:
+        seeded = seed_upload_match_templates_from_config(
+            db_name,
+            legacy_config,
+            current_user=get_current_user(),
+        )
+        if seeded:
+            print(f"   ✅ 已从本地 JSON 初始化 {seeded} 个业务模板到 knowledge.upload_match_template")
+            return load_upload_match_templates_config(db_name)
+    except Exception as e:
+        safe_message = str(e).splitlines()[0]
+        print(f"   ⚠️ 初始化数据库业务模板失败，临时使用本地 JSON 兜底: {safe_message}")
+
+    return legacy_config
+
+
+def _get_upload_match_config(
+    db_name: str,
+    template_key: str | None = None,
+    source_table_name: str | None = None,
+) -> dict:
+    db_config = _load_upload_match_db_config(db_name)
+    merged: dict = {}
+
+    default_config = db_config.get('default')
+    if isinstance(default_config, dict):
+        merged.update(default_config)
+
+    if source_table_name and source_table_name != template_key:
+        source_config = db_config.get(source_table_name)
+        if isinstance(source_config, dict):
+            merged.update(source_config)
+
+    if template_key:
+        template_config = db_config.get(template_key)
+        if isinstance(template_config, dict):
+            merged.update(template_config)
+
+    return merged
 
 
 def _persist_upload_template_to_knowledge(db_name: str, template_key: str, config: dict) -> dict:
@@ -1288,7 +1343,7 @@ def _persist_upload_template_to_knowledge(db_name: str, template_key: str, confi
 
 def _delete_upload_template_from_knowledge(db_name: str, template_key: str) -> dict:
     try:
-        delete_upload_match_template_record(db_name, template_key)
+        delete_upload_match_template_record(db_name, template_key, current_user=get_current_user())
         return {'ok': True, 'error': ''}
     except Exception as e:
         safe_message = str(e).splitlines()[0]
@@ -1892,10 +1947,7 @@ def upload_match_templates():
     if not db_name:
         return jsonify({'error': 'missing db_name'}), 400
     try:
-        db_config = _enrich_upload_template_audit(
-            db_name,
-            get_upload_match_configs().get(db_name) or {},
-        )
+        db_config = _load_upload_match_db_config(db_name)
         templates = get_upload_match_templates(db_name, db_config=db_config)
         return jsonify({'status': 'success', 'templates': templates})
     except Exception as e:
@@ -1959,10 +2011,7 @@ def upload_match_configs_api():
         if not db_name:
             return jsonify({'error': 'missing db_name', 'status': 'error'}), 400
         try:
-            db_config = _enrich_upload_template_audit(
-                db_name,
-                get_upload_match_configs().get(db_name) or {},
-            )
+            db_config = _load_upload_match_db_config(db_name)
             return jsonify({
                 'status': 'success',
                 'db_name': db_name,
@@ -1979,16 +2028,19 @@ def upload_match_configs_api():
         return jsonify({'error': 'missing db_name', 'status': 'error'}), 400
 
     try:
-        db_config = dict(get_upload_match_configs().get(db_name) or {})
+        db_config = dict(_load_upload_match_db_config(db_name))
         if request.method == 'DELETE':
             template_key = (data.get('template_key') or '').strip()
             if not template_key:
                 return jsonify({'error': 'missing template_key', 'status': 'error'}), 400
-            knowledge_sync = {'ok': True, 'error': ''}
-            if template_key in db_config:
-                db_config.pop(template_key, None)
-                set_upload_match_config_for_db(db_name, db_config)
-                knowledge_sync = _delete_upload_template_from_knowledge(db_name, template_key)
+            knowledge_sync = _delete_upload_template_from_knowledge(db_name, template_key)
+            if not knowledge_sync.get('ok'):
+                return jsonify({
+                    'status': 'error',
+                    'error': knowledge_sync.get('error') or '删除数据库业务模板失败',
+                    'knowledge_sync': knowledge_sync,
+                }), 500
+            db_config.pop(template_key, None)
             return jsonify({
                 'status': 'success',
                 'db_name': db_name,
@@ -2008,9 +2060,14 @@ def upload_match_configs_api():
 
         config['target_filter'] = _validate_target_filter(config.get('target_filter', ''))
 
-        db_config[template_key] = config
-        set_upload_match_config_for_db(db_name, db_config)
         knowledge_sync = _persist_upload_template_to_knowledge(db_name, template_key, config)
+        if not knowledge_sync.get('ok'):
+            return jsonify({
+                'status': 'error',
+                'error': knowledge_sync.get('error') or '保存数据库业务模板失败',
+                'knowledge_sync': knowledge_sync,
+            }), 500
+        db_config = dict(_load_upload_match_db_config(db_name, seed_from_legacy=False))
         return jsonify({
             'status': 'success',
             'db_name': db_name,
@@ -2069,7 +2126,7 @@ def match_uploaded_table():
             return jsonify({'error': f'未找到目标表: {source_table_name}', 'status': 'error'}), 404
 
         source_columns = source_table_meta.get('columns') or []
-        configured_upload_match_config = get_upload_match_config(
+        configured_upload_match_config = _get_upload_match_config(
             db_name,
             template_key=template_key if use_template_mode else None,
             source_table_name=source_table_name if use_template_mode else None,
@@ -2406,7 +2463,7 @@ def upload_excel():
     effective_table_name = effective_table_name.strip() or 'upload'
     config_template_key = template_key if use_template_mode else None
     config_source_table_name = effective_table_name if use_template_mode else None
-    upload_match_config = get_upload_match_config(
+    upload_match_config = _get_upload_match_config(
         db_name,
         template_key=config_template_key,
         source_table_name=config_source_table_name,

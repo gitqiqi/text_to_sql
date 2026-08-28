@@ -1,7 +1,7 @@
-# core/upload_match_template_repo.py - 上传匹配模板的 knowledge 库镜像
+# core/upload_match_template_repo.py - 上传匹配模板的 knowledge 库持久化
 import json
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import text
 
@@ -13,6 +13,40 @@ _READY_DBS: set[str] = set()
 
 def _json_dumps(value) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False)
+
+
+def _json_loads_object(value: Any) -> Dict:
+    if isinstance(value, dict):
+        return dict(value)
+    text_value = str(value or '').strip()
+    if not text_value:
+        return {}
+    try:
+        parsed = json.loads(text_value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_loads_list(value: Any) -> list:
+    if isinstance(value, list):
+        return value
+    text_value = str(value or '').strip()
+    if not text_value:
+        return []
+    try:
+        parsed = json.loads(text_value)
+    except Exception:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _format_timestamp(value: Any) -> str:
+    if not value:
+        return ''
+    if isinstance(value, datetime):
+        return value.isoformat(sep=' ', timespec='seconds')
+    return str(value)
 
 
 def _parse_timestamp(value) -> Optional[datetime]:
@@ -42,7 +76,7 @@ def ensure_upload_match_template_table(db_name: str) -> None:
         return
 
     engine = DatabasePoolManager.get_engine(db_name)
-    statements = [
+    ddl_statements = [
         """
         CREATE TABLE IF NOT EXISTS knowledge.upload_match_template (
             db_name VARCHAR(50) NOT NULL,
@@ -58,6 +92,7 @@ def ensure_upload_match_template_table(db_name: str) -> None:
             sql_text TEXT,
             return_fields_json TEXT,
             config_json TEXT,
+            status TEXT DEFAULT 'active',
             created_by TEXT,
             updated_by TEXT,
             created_by_admin_id BIGINT,
@@ -71,6 +106,7 @@ def ensure_upload_match_template_table(db_name: str) -> None:
         """,
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS return_fields_json TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS config_json TEXT",
+        "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_by TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS updated_by TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_by_admin_id BIGINT",
@@ -80,11 +116,155 @@ def ensure_upload_match_template_table(db_name: str) -> None:
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
     ]
+    dml_statements = [
+        "UPDATE knowledge.upload_match_template SET status = 'active' WHERE status IS NULL",
+    ]
 
     with engine.begin() as conn:
-        for statement in statements:
+        for statement in ddl_statements:
+            conn.execute(text(statement))
+
+    with engine.begin() as conn:
+        for statement in dml_statements:
             conn.execute(text(statement))
     _READY_DBS.add(db_name)
+
+
+def _row_to_template_config(mapping: Dict[str, Any]) -> Dict:
+    template_key = str(mapping.get('template_key') or '').strip()
+    config = _json_loads_object(mapping.get('config_json'))
+
+    for field in (
+        'label',
+        'description',
+        'keyword_column',
+        'match_table',
+        'match_field',
+        'match_field_display',
+        'match_mode',
+        'target_filter',
+        'sql_text',
+        'status',
+    ):
+        value = mapping.get(field)
+        if value is not None:
+            config[field] = str(value)
+
+    return_fields = _json_loads_list(mapping.get('return_fields_json'))
+    if return_fields or 'return_fields' not in config:
+        config['return_fields'] = return_fields
+
+    config['label'] = str(config.get('label') or config.get('name') or template_key).strip()
+    config['name'] = str(config.get('name') or config['label']).strip()
+
+    for field in (
+        'created_by',
+        'updated_by',
+        'created_by_admin_id',
+        'created_by_user_name',
+        'updated_by_admin_id',
+        'updated_by_user_name',
+        'created_at',
+        'updated_at',
+    ):
+        value = mapping.get(field)
+        if value not in (None, ''):
+            config[field] = _format_timestamp(value)
+
+    return config
+
+
+def load_upload_match_templates_config(db_name: str) -> Dict[str, Dict]:
+    """从 knowledge.upload_match_template 读取该库全部业务模板配置。"""
+    ensure_upload_match_template_table(db_name)
+    engine = DatabasePoolManager.get_engine(db_name)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                    db_name,
+                    template_key,
+                    label,
+                    description,
+                    keyword_column,
+                    match_table,
+                    match_field,
+                    match_field_display,
+                    match_mode,
+                    target_filter,
+                    sql_text,
+                    return_fields_json,
+                    config_json,
+                    status,
+                    created_by,
+                    updated_by,
+                    created_by_admin_id,
+                    created_by_user_name,
+                    updated_by_admin_id,
+                    updated_by_user_name,
+                    created_at,
+                    updated_at
+                FROM knowledge.upload_match_template
+                WHERE db_name = :db_name
+                  AND COALESCE(status, 'active') <> 'delete'
+                ORDER BY
+                    CASE WHEN template_key = 'default' THEN 0 ELSE 1 END,
+                    updated_at DESC NULLS LAST,
+                    template_key
+            """),
+            {'db_name': db_name},
+        ).fetchall()
+
+    configs: Dict[str, Dict] = {}
+    for row in rows:
+        mapping = dict(row._mapping)
+        template_key = str(mapping.get('template_key') or '').strip()
+        if not template_key:
+            continue
+        configs[template_key] = _row_to_template_config(mapping)
+    return configs
+
+
+def get_upload_match_config_from_db(
+    db_name: str,
+    template_key: Optional[str] = None,
+    source_table_name: Optional[str] = None,
+) -> Dict:
+    """从数据库读取并合并默认配置、表级配置、模板配置。"""
+    db_config = load_upload_match_templates_config(db_name)
+    merged: Dict = {}
+
+    default_config = db_config.get('default')
+    if isinstance(default_config, dict):
+        merged.update(default_config)
+
+    if source_table_name and source_table_name != template_key:
+        source_config = db_config.get(source_table_name)
+        if isinstance(source_config, dict):
+            merged.update(source_config)
+
+    if template_key:
+        template_config = db_config.get(template_key)
+        if isinstance(template_config, dict):
+            merged.update(template_config)
+
+    return merged
+
+
+def seed_upload_match_templates_from_config(
+    db_name: str,
+    db_config: Dict,
+    current_user: Optional[Dict] = None,
+) -> int:
+    """把历史 JSON 配置导入数据库；已有模板会被 upsert。"""
+    count = 0
+    for template_key, config in (db_config or {}).items():
+        template_key = str(template_key or '').strip()
+        if not template_key or not isinstance(config, dict):
+            continue
+        upsert_upload_match_template(db_name, template_key, config, current_user=current_user)
+        count += 1
+    return count
 
 
 def upsert_upload_match_template(
@@ -110,6 +290,7 @@ def upsert_upload_match_template(
         'sql_text': config.get('sql_text') or '',
         'return_fields_json': _json_dumps(config.get('return_fields') or []),
         'config_json': _json_dumps(config),
+        'status': 'active',
         'created_by': str(config.get('created_by') or actor).strip() or 'system',
         'updated_by': actor,
         'created_by_admin_id': (current_user or {}).get('admin_id'),
@@ -129,7 +310,7 @@ def upsert_upload_match_template(
                     db_name, template_key, label, description, keyword_column,
                     match_table, match_field, match_field_display, match_mode,
                     target_filter, sql_text, return_fields_json, config_json,
-                    created_by, updated_by,
+                    status, created_by, updated_by,
                     created_by_admin_id, created_by_user_name,
                     updated_by_admin_id, updated_by_user_name,
                     created_at, updated_at
@@ -137,7 +318,7 @@ def upsert_upload_match_template(
                     :db_name, :template_key, :label, :description, :keyword_column,
                     :match_table, :match_field, :match_field_display, :match_mode,
                     :target_filter, :sql_text, :return_fields_json, :config_json,
-                    :created_by, :updated_by,
+                    :status, :created_by, :updated_by,
                     :created_by_admin_id, :created_by_user_name,
                     :updated_by_admin_id, :updated_by_user_name,
                     COALESCE(:created_at, NOW()), COALESCE(:updated_at, NOW())
@@ -154,6 +335,7 @@ def upsert_upload_match_template(
                     sql_text = EXCLUDED.sql_text,
                     return_fields_json = EXCLUDED.return_fields_json,
                     config_json = EXCLUDED.config_json,
+                    status = EXCLUDED.status,
                     created_by = COALESCE(knowledge.upload_match_template.created_by, EXCLUDED.created_by),
                     updated_by = EXCLUDED.updated_by,
                     created_by_admin_id = COALESCE(knowledge.upload_match_template.created_by_admin_id, EXCLUDED.created_by_admin_id),
@@ -166,20 +348,38 @@ def upsert_upload_match_template(
         )
 
 
-def delete_upload_match_template_record(db_name: str, template_key: str) -> None:
+def delete_upload_match_template_record(
+    db_name: str,
+    template_key: str,
+    current_user: Optional[Dict] = None,
+) -> None:
+    actor = _display_user(current_user)
+    user_name = (current_user or {}).get('user_name') or actor
     ensure_upload_match_template_table(db_name)
     engine = DatabasePoolManager.get_engine(db_name)
     with engine.begin() as conn:
         conn.execute(
             text("""
-                DELETE FROM knowledge.upload_match_template
+                UPDATE knowledge.upload_match_template
+                SET status = 'delete',
+                    updated_by = :updated_by,
+                    updated_by_admin_id = :updated_by_admin_id,
+                    updated_by_user_name = :updated_by_user_name,
+                    updated_at = NOW()
                 WHERE db_name = :db_name AND template_key = :template_key
             """),
-            {'db_name': db_name, 'template_key': template_key},
+            {
+                'db_name': db_name,
+                'template_key': template_key,
+                'updated_by': actor,
+                'updated_by_admin_id': (current_user or {}).get('admin_id'),
+                'updated_by_user_name': user_name,
+            },
         )
 
 
 def load_upload_match_template_audit_map(db_name: str) -> Dict[str, Dict]:
+    ensure_upload_match_template_table(db_name)
     engine = DatabasePoolManager.get_engine(db_name)
     try:
         with engine.connect() as conn:
@@ -191,6 +391,7 @@ def load_upload_match_template_audit_map(db_name: str) -> Dict[str, Dict]:
                            created_at, updated_at
                     FROM knowledge.upload_match_template
                     WHERE db_name = :db_name
+                      AND COALESCE(status, 'active') <> 'delete'
                 """),
                 {'db_name': db_name},
             ).fetchall()

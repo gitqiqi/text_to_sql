@@ -1327,6 +1327,11 @@
             cursor: not-allowed;
         }
 
+        .result-datetime-cell {
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
         .main-workspace {
             flex: 2;
             min-height: 240px;
@@ -1439,13 +1444,16 @@
         }
 
         .match-workspace-body {
+            width: 100%;
+            box-sizing: border-box;
             padding: 22px 28px;
             overflow: auto;
         }
 
         .match-control-panel {
+            width: 100%;
             min-width: 0;
-            max-width: 940px;
+            max-width: none;
             margin-bottom: 26px;
             padding: 0;
             border: 0;
@@ -1551,7 +1559,8 @@
             align-items: stretch;
             justify-content: flex-start;
             gap: 8px;
-            max-width: 940px;
+            width: 100%;
+            max-width: none;
             margin: 2px 0 18px;
             position: relative;
             z-index: 1;
@@ -1887,7 +1896,7 @@
         .match-template-table-head,
         .match-template-card {
             display: grid;
-            grid-template-columns: minmax(220px, 1.5fr) 96px minmax(160px, 1.2fr) minmax(120px, 0.9fr) 72px minmax(150px, 0.9fr);
+            grid-template-columns: minmax(220px, 1.45fr) minmax(96px, 0.75fr) minmax(160px, 1.15fr) minmax(120px, 0.85fr) 72px minmax(150px, 0.9fr) 144px;
         }
 
         .match-template-table-head > div {
@@ -1925,8 +1934,55 @@
         }
 
         .match-template-card:hover > div,
-        .match-template-card.active > div {
+        .match-template-card.active > div,
+        .match-template-card:focus-visible > div {
             background: #eef2ff;
+        }
+
+        .match-template-card-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 8px;
+        }
+
+        .match-template-enable-btn,
+        .match-template-delete-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 44px;
+            min-height: 28px;
+            padding: 4px 8px;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            background: #fff;
+            color: #dc2626;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .match-template-enable-btn {
+            border: 1px solid #bfdbfe;
+            background: #eff6ff;
+            color: #2563eb;
+        }
+
+        .match-template-enable-btn:hover {
+            background: #dbeafe;
+            border-color: #93c5fd;
+        }
+
+        .match-template-delete-btn:hover {
+            background: #fef2f2;
+            border-color: #fca5a5;
+        }
+
+        .match-template-enable-btn:disabled,
+        .match-template-delete-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.55;
         }
 
         .match-template-card-title {
@@ -3107,12 +3163,12 @@
                             <h2 id="matchWorkspaceTitle">数据匹配</h2>
                             <div class="workspace-title-editor hidden" id="matchTemplateTitleEditor">
                                 <input type="text" id="matchCanvasTemplateLabel" class="template-label-input" placeholder="模板名称">
-                                <input type="text" id="matchCanvasTemplateKey" class="template-key-input" placeholder="模板标识">
+                                <input type="text" id="matchCanvasTemplateKey" class="template-key-input" placeholder="匹配场景">
                             </div>
                         </div>
                         <div class="workspace-actions">
                             <button type="button" class="workspace-btn secondary hidden" id="matchWorkspaceNewTemplateBtn">新建模板</button>
-                            <button type="button" class="workspace-btn danger hidden" id="matchWorkspaceDeleteTemplateBtn">删除配置</button>
+                            <button type="button" class="workspace-btn danger hidden" id="matchWorkspaceDeleteTemplateBtn">删除模板</button>
                             <button type="button" class="workspace-btn secondary hidden" id="matchWorkspaceBackToTemplateListBtn">返回列表</button>
                             <button type="button" class="workspace-btn secondary hidden" id="matchWorkspaceConfigBtn">退出配置</button>
                             <button type="button" class="workspace-btn hidden" id="matchWorkspaceRunBtn">保存配置</button>
@@ -3237,8 +3293,8 @@
 
                         <div class="upload-config-grid">
                             <div class="upload-field">
-                                <label class="tool-label" for="uploadConfigTemplateKey">模板标识</label>
-                                <input type="text" id="uploadConfigTemplateKey" class="tool-input" placeholder="例如：product_match">
+                                <label class="tool-label" for="uploadConfigTemplateKey">匹配场景</label>
+                                <input type="text" id="uploadConfigTemplateKey" class="tool-input" placeholder="例如：班级信息">
                             </div>
                             <div class="upload-field">
                                 <label class="tool-label" for="uploadConfigLabel">显示名称</label>
@@ -3276,7 +3332,7 @@
                         </div>
                         <div class="upload-config-actions" style="margin-top: 10px;">
                             <button type="button" id="uploadConfigSaveBtn" class="tool-btn">保存配置</button>
-                            <button type="button" id="uploadConfigDeleteBtn" class="tool-btn" style="background: linear-gradient(135deg, #f87171, #dc2626);">删除配置</button>
+                            <button type="button" id="uploadConfigDeleteBtn" class="tool-btn" style="background: linear-gradient(135deg, #f87171, #dc2626);">删除模板</button>
                         </div>
                         <div class="workflow-node-note" id="uploadConfigStatus" style="margin-top: 8px;"></div>
                     </div>
@@ -3860,17 +3916,20 @@
             grid.innerHTML = `
                 <div class="match-template-table-head">
                     <div>模板名称 / 创建人/时间</div>
-                    <div>模板ID</div>
+                    <div>匹配场景</div>
                     <div>目标表</div>
                     <div>匹配字段</div>
                     <div>返回字段</div>
                     <div>创建/修改</div>
+                    <div>操作</div>
                 </div>
             ` + entries.map(item => {
                 const activeClass = item.key === activeKey ? ' active' : '';
+                const enableDisabled = item.key === activeKey ? ' disabled' : '';
+                const enableText = item.key === activeKey ? '已启用' : '启用';
                 const createdText = item.created_text ? `创建：${item.created_text}` : '创建：未记录';
                 return `
-                    <button type="button" class="match-template-card${activeClass}" data-template-key="${escapeAttr(item.key)}">
+                    <div role="button" tabindex="0" class="match-template-card${activeClass}" data-template-key="${escapeAttr(item.key)}">
                         <div class="match-template-card-title" title="${escapeAttr(item.label || '')}">
                             <span class="match-template-name-main">${escapeHtml(item.label || item.key)}</span>
                             <span class="match-template-name-created">${escapeHtml(createdText)}</span>
@@ -3880,13 +3939,53 @@
                         <div title="${escapeAttr(item.match_field_display || item.match_field || '')}">${escapeHtml(item.match_field_display || item.match_field || '未配置')}</div>
                         <div>${item.return_count} 个</div>
                         <div class="match-template-card-meta">${item.audit_text ? item.audit_text.split(' · ').map(part => `<span>${escapeHtml(part)}</span>`).join('') : '<span>未记录</span>'}</div>
-                    </button>
+                        <div class="match-template-card-actions">
+                            <button type="button" class="match-template-enable-btn" data-template-key="${escapeAttr(item.key)}"${enableDisabled}>${enableText}</button>
+                            <button type="button" class="match-template-delete-btn" data-template-key="${escapeAttr(item.key)}">删除</button>
+                        </div>
+                    </div>
                 `;
             }).join('');
 
             grid.querySelectorAll('.match-template-card').forEach(card => {
-                card.addEventListener('click', () => {
+                card.addEventListener('click', event => {
+                    if (event.target.closest('.match-template-enable-btn, .match-template-delete-btn')) return;
                     setCanvasEditMode(true, card.dataset.templateKey || '');
+                });
+                card.addEventListener('keydown', event => {
+                    if (event.target.closest('.match-template-enable-btn, .match-template-delete-btn')) return;
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    setCanvasEditMode(true, card.dataset.templateKey || '');
+                });
+            });
+
+            grid.querySelectorAll('.match-template-enable-btn').forEach(button => {
+                button.addEventListener('click', event => {
+                    event.stopPropagation();
+                    enableMatchTemplate(button.dataset.templateKey || '');
+                });
+            });
+
+            grid.querySelectorAll('.match-template-delete-btn').forEach(button => {
+                button.addEventListener('click', async event => {
+                    event.stopPropagation();
+                    const templateKey = button.dataset.templateKey || '';
+                    const label = getTemplateLabelValue(uploadMatchConfigs[templateKey] || {}, templateKey);
+                    if (!templateKey || !confirm(`确定删除匹配场景 ${label} 吗？`)) return;
+                    button.disabled = true;
+                    try {
+                        await deleteCanvasTemplateConfig(templateKey);
+                    } catch (error) {
+                        button.disabled = false;
+                        const status = document.getElementById('uploadStatus');
+                        if (status) {
+                            status.className = 'upload-status error';
+                            status.textContent = '❌ ' + error.message;
+                        } else {
+                            alert(error.message);
+                        }
+                    }
                 });
             });
         }
@@ -3960,6 +4059,20 @@
             refreshMatchWorkspaceSummary();
         }
 
+        function enableMatchTemplate(templateKey = '') {
+            const key = String(templateKey || '').trim();
+            if (!key || !uploadMatchConfigs[key]) return;
+            const templateSelect = document.getElementById('uploadTemplateSelect');
+            if (templateSelect) {
+                templateSelect.value = key;
+                templateSelect.disabled = false;
+            }
+            canvasEditingTemplateKey = key;
+            renderUploadTemplateMatchFields();
+            renderUploadExtraMatchFieldPairs(uploadExtraMatchFieldPairs);
+            closeTemplateConfigMode();
+        }
+
         function createDraftTemplate() {
             canvasEditingTemplateKey = '';
             uploadMatchConfigs.__draft__ = {
@@ -4005,7 +4118,7 @@
             const fallbackKey = activeKey === '__draft__' ? '' : activeKey;
             const templateKey = document.getElementById('matchCanvasTemplateKey')?.value?.trim() || fallbackKey;
             if (!templateKey) {
-                throw new Error('请先填写模板标识');
+                throw new Error('请先填写匹配场景');
             }
             const rawMatchTable = document.getElementById('matchCanvasMatchTable')?.value?.trim() || '';
             const matchTable = getCanonicalTableValue(rawMatchTable);
@@ -4073,9 +4186,9 @@
             setCanvasEditMode(true, payload.template_key);
         }
 
-        async function deleteCanvasTemplateConfig() {
+        async function deleteCanvasTemplateConfig(templateKeyOverride = '') {
             const db = getActiveDbName();
-            const templateKey = getActiveTemplateKey();
+            const templateKey = String(templateKeyOverride || getActiveTemplateKey() || '').trim();
             if (!db || !templateKey) {
                 throw new Error('请先选择要删除的模板');
             }
@@ -4094,6 +4207,9 @@
                 throw new Error(data.error || '删除失败');
             }
             await loadUploadTemplates();
+            if (canvasEditingTemplateKey === templateKey) {
+                canvasEditingTemplateKey = '';
+            }
             openTemplateListMode();
         }
 
@@ -4825,7 +4941,7 @@
         });
 
         document.getElementById('matchWorkspaceDeleteTemplateBtn').addEventListener('click', async () => {
-            if (!confirm('确定删除当前模板配置吗？')) return;
+            if (!confirm('确定删除当前匹配场景吗？')) return;
             try {
                 await deleteCanvasTemplateConfig();
             } catch (error) {
@@ -6336,7 +6452,7 @@
 
             const templateKey = (keyInput?.value || '').trim();
             if (!templateKey) {
-                throw new Error('请先填写模板标识');
+                throw new Error('请先填写匹配场景');
             }
             const existingConfig = uploadMatchConfigs[templateKey] || {};
 
@@ -6408,11 +6524,11 @@
                 return;
             }
             if (!templateKey) {
-                status.textContent = '请先填写或选择模板标识';
+                status.textContent = '请先填写或选择匹配场景';
                 return;
             }
 
-            if (!window.confirm(`确定删除模板 ${templateKey} 吗？`)) {
+            if (!window.confirm(`确定删除匹配场景 ${templateKey} 吗？`)) {
                 return;
             }
 
@@ -6865,6 +6981,38 @@
             return renderPage(1, data, columns, pageSize, totalCount, exportActionLabel);
         }
 
+        function formatRfcDateString(value = '') {
+            const match = String(value).trim().match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+GMT$/i);
+            if (!match) return '';
+            const monthLookup = {
+                jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+                jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+            };
+            const day = match[2].padStart(2, '0');
+            const month = monthLookup[match[3].slice(0, 3).toLowerCase()];
+            if (!month) return '';
+            return `${match[4]}-${month}-${day} ${match[5]}:${match[6]}:${match[7]}`;
+        }
+
+        function formatResultCellValue(value) {
+            if (value === null || value === undefined) {
+                return { text: 'NULL', isDateTime: false };
+            }
+            if (typeof value === 'object') {
+                return { text: JSON.stringify(value), isDateTime: false };
+            }
+
+            const text = String(value);
+            const rfcDate = formatRfcDateString(text);
+            if (rfcDate) {
+                return { text: rfcDate, isDateTime: true };
+            }
+            if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?$/.test(text.trim())) {
+                return { text: text.trim().replace('T', ' ').replace(/\.\d+/, '').replace(/(?:[+-]\d{2}:?\d{2}|Z)$/i, ''), isDateTime: true };
+            }
+            return { text, isDateTime: false };
+        }
+
         function renderPage(page, data, columns, pageSize, totalCount = data.length, exportActionLabel = '') {
             const totalPages = Math.ceil(data.length / pageSize);
             const start = (page - 1) * pageSize;
@@ -6879,10 +7027,10 @@
             pageData.forEach(row => {
                 html += '<tr>';
                 columns.forEach(col => {
-                    let val = row[col];
-                    if (val === null || val === undefined) val = 'NULL';
-                    if (typeof val === 'object') val = JSON.stringify(val);
-                    html += `<td title="${escapeHtml(String(val))}">${escapeHtml(String(val).substring(0, 200))}${String(val).length > 200 ? '...' : ''}</td>`;
+                    const formatted = formatResultCellValue(row[col]);
+                    const text = formatted.text;
+                    const cellClass = formatted.isDateTime ? ' class="result-datetime-cell"' : '';
+                    html += `<td${cellClass} title="${escapeHtml(text)}">${escapeHtml(text.substring(0, 200))}${text.length > 200 ? '...' : ''}</td>`;
                 });
                 html += '</tr>';
             });
