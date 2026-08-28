@@ -79,7 +79,7 @@ def add_local_preview_cors_headers(response):
     if request.headers.get('Origin') == 'null':
         response.headers['Access-Control-Allow-Origin'] = 'null'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,DELETE,OPTIONS'
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PATCH,DELETE,OPTIONS'
     return response
 
 # 注册蓝图

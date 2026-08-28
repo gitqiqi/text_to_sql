@@ -53,3 +53,12 @@ CREATE TABLE IF NOT EXISTS knowledge.dataworks_node_knowledge (
     table_storage_mode = 'any',
     time_to_live_in_seconds = '3153600000'
 );
+
+CREATE TABLE IF NOT EXISTS knowledge.dataworks_api_usage (
+    usage_date DATE NOT NULL,
+    project_id BIGINT NOT NULL,
+    api_calls BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (usage_date, project_id)
+);

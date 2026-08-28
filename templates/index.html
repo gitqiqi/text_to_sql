@@ -1946,7 +1946,6 @@
             gap: 8px;
         }
 
-        .match-template-enable-btn,
         .match-template-delete-btn {
             display: inline-flex;
             align-items: center;
@@ -1963,15 +1962,62 @@
             cursor: pointer;
         }
 
-        .match-template-enable-btn {
-            border: 1px solid #bfdbfe;
-            background: #eff6ff;
-            color: #2563eb;
+        .match-template-switch {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            width: 42px;
+            height: 24px;
+            flex: 0 0 42px;
+            cursor: pointer;
         }
 
-        .match-template-enable-btn:hover {
-            background: #dbeafe;
-            border-color: #93c5fd;
+        .match-template-enable-switch {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+        }
+
+        .match-template-switch-track {
+            position: relative;
+            width: 42px;
+            height: 24px;
+            border-radius: 999px;
+            background: #cbd5e1;
+            transition: background 0.18s ease;
+        }
+
+        .match-template-switch-thumb {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+            transition: transform 0.18s ease;
+        }
+
+        .match-template-enable-switch:checked + .match-template-switch-track {
+            background: #2563eb;
+        }
+
+        .match-template-enable-switch:checked + .match-template-switch-track .match-template-switch-thumb {
+            transform: translateX(18px);
+        }
+
+        .match-template-enable-switch:focus-visible + .match-template-switch-track {
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+        }
+
+        .match-template-switch:hover .match-template-switch-track {
+            background: #94a3b8;
+        }
+
+        .match-template-switch:hover .match-template-enable-switch:checked + .match-template-switch-track {
+            background: #1d4ed8;
         }
 
         .match-template-delete-btn:hover {
@@ -1979,7 +2025,6 @@
             border-color: #fca5a5;
         }
 
-        .match-template-enable-btn:disabled,
         .match-template-delete-btn:disabled {
             cursor: not-allowed;
             opacity: 0.55;
@@ -3709,6 +3754,14 @@
             return String(config.label || config.name || fallbackKey || '').trim() || String(fallbackKey || '').trim();
         }
 
+        function isUploadTemplateEnabled(config = {}) {
+            const value = config.is_enabled;
+            if (value === undefined || value === null || value === '') return true;
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'number') return value !== 0;
+            return !['0', 'false', 'f', 'no', 'n', 'off', 'disabled'].includes(String(value).trim().toLowerCase());
+        }
+
         function formatTemplateTimestamp(value = '') {
             const text = String(value || '').trim();
             if (!text) return '';
@@ -3883,6 +3936,7 @@
                     updated_by: config.updated_by || '',
                     created_at: config.created_at || '',
                     updated_at: config.updated_at || '',
+                    is_enabled: isUploadTemplateEnabled(config),
                     created_text: buildTemplateCreatedText(config),
                     audit_text: buildTemplateAuditText(config),
                 };
@@ -3925,8 +3979,8 @@
                 </div>
             ` + entries.map(item => {
                 const activeClass = item.key === activeKey ? ' active' : '';
-                const enableDisabled = item.key === activeKey ? ' disabled' : '';
-                const enableText = item.key === activeKey ? '已启用' : '启用';
+                const enableChecked = item.is_enabled ? ' checked' : '';
+                const enableTitle = item.is_enabled ? '已在业务模板中显示' : '已从业务模板中隐藏';
                 const createdText = item.created_text ? `创建：${item.created_text}` : '创建：未记录';
                 return `
                     <div role="button" tabindex="0" class="match-template-card${activeClass}" data-template-key="${escapeAttr(item.key)}">
@@ -3940,7 +3994,12 @@
                         <div>${item.return_count} 个</div>
                         <div class="match-template-card-meta">${item.audit_text ? item.audit_text.split(' · ').map(part => `<span>${escapeHtml(part)}</span>`).join('') : '<span>未记录</span>'}</div>
                         <div class="match-template-card-actions">
-                            <button type="button" class="match-template-enable-btn" data-template-key="${escapeAttr(item.key)}"${enableDisabled}>${enableText}</button>
+                            <label class="match-template-switch" title="${escapeAttr(enableTitle)}">
+                                <input type="checkbox" class="match-template-enable-switch" data-template-key="${escapeAttr(item.key)}"${enableChecked} aria-label="${escapeAttr(enableTitle)}">
+                                <span class="match-template-switch-track" aria-hidden="true">
+                                    <span class="match-template-switch-thumb"></span>
+                                </span>
+                            </label>
                             <button type="button" class="match-template-delete-btn" data-template-key="${escapeAttr(item.key)}">删除</button>
                         </div>
                     </div>
@@ -3949,21 +4008,31 @@
 
             grid.querySelectorAll('.match-template-card').forEach(card => {
                 card.addEventListener('click', event => {
-                    if (event.target.closest('.match-template-enable-btn, .match-template-delete-btn')) return;
+                    if (event.target.closest('.match-template-switch, .match-template-delete-btn')) return;
                     setCanvasEditMode(true, card.dataset.templateKey || '');
                 });
                 card.addEventListener('keydown', event => {
-                    if (event.target.closest('.match-template-enable-btn, .match-template-delete-btn')) return;
+                    if (event.target.closest('.match-template-switch, .match-template-delete-btn')) return;
                     if (event.key !== 'Enter' && event.key !== ' ') return;
                     event.preventDefault();
                     setCanvasEditMode(true, card.dataset.templateKey || '');
                 });
             });
 
-            grid.querySelectorAll('.match-template-enable-btn').forEach(button => {
-                button.addEventListener('click', event => {
+            grid.querySelectorAll('.match-template-switch').forEach(label => {
+                label.addEventListener('click', event => {
                     event.stopPropagation();
-                    enableMatchTemplate(button.dataset.templateKey || '');
+                });
+            });
+
+            grid.querySelectorAll('.match-template-enable-switch').forEach(input => {
+                input.addEventListener('click', event => {
+                    event.stopPropagation();
+                });
+                input.addEventListener('change', event => {
+                    event.stopPropagation();
+                    const templateKey = input.dataset.templateKey || '';
+                    setMatchTemplateEnabled(templateKey, input.checked, input);
                 });
             });
 
@@ -4059,18 +4128,47 @@
             refreshMatchWorkspaceSummary();
         }
 
-        function enableMatchTemplate(templateKey = '') {
+        async function setMatchTemplateEnabled(templateKey = '', isEnabled = true, input = null) {
             const key = String(templateKey || '').trim();
-            if (!key || !uploadMatchConfigs[key]) return;
-            const templateSelect = document.getElementById('uploadTemplateSelect');
-            if (templateSelect) {
-                templateSelect.value = key;
-                templateSelect.disabled = false;
+            if (!key || !uploadMatchConfigs[key]) {
+                if (input) input.checked = !isEnabled;
+                return;
             }
-            canvasEditingTemplateKey = key;
-            renderUploadTemplateMatchFields();
-            renderUploadExtraMatchFieldPairs(uploadExtraMatchFieldPairs);
-            closeTemplateConfigMode();
+            const db = getActiveDbName();
+            if (!db) {
+                if (input) input.checked = !isEnabled;
+                alert('数据库加载中，请稍后重试');
+                return;
+            }
+
+            const previousEnabled = isUploadTemplateEnabled(uploadMatchConfigs[key] || {});
+            if (input) input.disabled = true;
+
+            try {
+                const response = await fetch('/api/upload_match_configs', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        db_name: db,
+                        template_key: key,
+                        is_enabled: Boolean(isEnabled),
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || '更新启用状态失败');
+                }
+                uploadMatchConfigs = data.db_config || uploadMatchConfigs;
+                uploadTemplates = Array.isArray(data.templates) ? data.templates : uploadTemplates;
+                await loadUploadTemplates();
+            } catch (error) {
+                if (input) {
+                    input.disabled = false;
+                    input.checked = previousEnabled;
+                }
+                console.error('更新模板启用状态失败:', error);
+                alert(error.message || '更新启用状态失败');
+            }
         }
 
         function createDraftTemplate() {
@@ -6863,6 +6961,7 @@
                     nl_query: query,
                     db_name: db,
                     schema_name: getSelectedSchema(),
+                    query_context_mode: getSelectedSchema(),
                     selected_table: useFullTable ? null : selectedTableValue,
                     use_vector_search: useVectorSearch,
                     top_k_tables: topKTables,

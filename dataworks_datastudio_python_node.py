@@ -29,6 +29,7 @@ DEFAULT_CONTENT_LIMIT = 8000
 DEFAULT_REGION_ID = 'cn-beijing'
 DEFAULT_ENDPOINT = 'https://dataworks.{region}.aliyuncs.com'
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30
+DEFAULT_DATAWORKS_DAILY_API_LIMIT = 20
 DEFAULT_HOLOGRES_PORT = '80'
 DEFAULT_HOLOGRES_SSLMODE = 'prefer'
 DEFAULT_HOLOGRES_SCHEMA = 'knowledge'
@@ -41,13 +42,7 @@ DEFAULT_DATAWORKS_REQUEST_INTERVAL_SECONDS = 0.2
 DEFAULT_DATAWORKS_USE_TYPE = 'NORMAL'
 
 MANUAL_CONFIG = {
-    'DATAWORKS_ACCESS_KEY_ID': '',
-    'DATAWORKS_ACCESS_KEY_SECRET': '',
-    'DATAWORKS_PROJECT_ID': '333511',
-    'HOLOGRES_HOST': 'your-hologres-host',
-    'HOLOGRES_DB': 'your-hologres-db',
-    'HOLOGRES_USER': 'your-hologres-user',
-    'HOLOGRES_PASSWORD': '',
+    'DATAWORKS_DAILY_API_LIMIT': str(DEFAULT_DATAWORKS_DAILY_API_LIMIT),
     'DATAWORKS_MAX_RETRIES': str(DEFAULT_DATAWORKS_MAX_RETRIES),
     'DATAWORKS_RETRY_BASE_SECONDS': str(DEFAULT_DATAWORKS_RETRY_BASE_SECONDS),
     'DATAWORKS_RETRY_MAX_SECONDS': str(DEFAULT_DATAWORKS_RETRY_MAX_SECONDS),
@@ -187,6 +182,194 @@ def _extract_table_names(entries: Any) -> List[str]:
     return list(dict.fromkeys(names))
 
 
+_SQL_KEYWORDS_RE = re.compile(r'\b(select|with|insert|create|merge|delete|update)\b', re.IGNORECASE)
+_SQL_IDENT_PART = r'(?:`[^`]+`|"[^"]+"|\[[^\]]+\]|[\w$]+)'
+_SQL_TABLE_TOKEN = rf'{_SQL_IDENT_PART}(?:\s*\.\s*{_SQL_IDENT_PART})*'
+_SQL_INPUT_PATTERNS = (
+    re.compile(rf'\bFROM\s+({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+    re.compile(rf'\bJOIN\s+({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+    re.compile(rf'\bUSING\s+({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+)
+_SQL_OUTPUT_PATTERNS = (
+    re.compile(rf'\bINSERT\s+(?:OVERWRITE|INTO)\s+(?:TABLE\s+)?({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+    re.compile(rf'\bMERGE\s+INTO\s+({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+    re.compile(rf'\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMPORARY\s+|TEMP\s+|EXTERNAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+    re.compile(rf'\bCREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?({_SQL_TABLE_TOKEN})', re.IGNORECASE),
+)
+_PY_INPUT_TABLE_PATTERNS = (
+    re.compile(r'\b(?:get_table|read_table)\s*\(\s*[rRuUfFbB]*([\'"])([\w.]+)\1', re.IGNORECASE),
+)
+_PY_OUTPUT_TABLE_PATTERNS = (
+    re.compile(r'\bwrite_table\s*\(\s*[rRuUfFbB]*([\'"])([\w.]+)\1', re.IGNORECASE),
+    re.compile(r'\bcreate_table\s*\(\s*[rRuUfFbB]*([\'"])([\w.]+)\1', re.IGNORECASE),
+    re.compile(r'\btable_name\s*(?::\s*[\w.\[\]]+)?\s*=\s*[rRuUfFbB]*([\'"])([\w.]+)\1', re.IGNORECASE),
+)
+_NON_TABLE_IDENTIFIERS = {
+    'all', 'and', 'array', 'as', 'avg', 'between', 'by', 'case', 'cast', 'coalesce',
+    'concat', 'count', 'cross', 'current_date', 'current_timestamp', 'date', 'date_format',
+    'dateadd', 'datediff', 'day', 'desc', 'distinct', 'else', 'end', 'exists', 'extract',
+    'false', 'first_value', 'floor', 'from', 'from_unixtime', 'full', 'group', 'having',
+    'if', 'in', 'inner', 'is', 'join', 'last_value', 'left', 'max', 'min', 'month',
+    'not', 'now', 'null', 'on', 'or', 'order', 'outer', 'partition', 'rank', 'regexp_replace',
+    'replace', 'right', 'row_number', 'select', 'substr', 'substring', 'sum', 'table',
+    'then', 'to_date', 'true', 'union', 'using', 'when', 'where', 'window', 'year',
+}
+
+
+def _normalize_table_identifier(value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ''
+    text = text.strip().strip('(),;')
+    parts = []
+    for part in re.split(r'\s*\.\s*', text):
+        part = part.strip().strip('`"\'').strip('[]').strip()
+        part = part.strip('(),;')
+        if part:
+            parts.append(part)
+    return '.'.join(parts)
+
+
+def _is_lineage_table(value: Any, *, cte_names: Optional[set] = None) -> bool:
+    table_name = _normalize_table_identifier(value)
+    if not table_name:
+        return False
+    lower = table_name.lower()
+    last_part = lower.split('.')[-1]
+    if lower in (cte_names or set()) or last_part in (cte_names or set()):
+        return False
+    if lower in _NON_TABLE_IDENTIFIERS or last_part in _NON_TABLE_IDENTIFIERS:
+        return False
+    if re.fullmatch(r'\d+', last_part):
+        return False
+    if last_part.startswith('$') or last_part.startswith('{'):
+        return False
+    return True
+
+
+def _strip_sql_comments(text_value: str) -> str:
+    text_value = re.sub(r'/\*.*?\*/', ' ', text_value, flags=re.DOTALL)
+    lines = []
+    for line in text_value.splitlines():
+        if '--' in line:
+            line = line[:line.index('--')]
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+def _looks_like_sql_script(content: str) -> bool:
+    text_value = _strip_sql_comments(_normalize_text(content))
+    for line in text_value.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if lower.startswith(('select', 'with', 'insert', 'create', 'merge', 'delete', 'update', 'set')):
+            return True
+        if lower.startswith(('from ', 'join ', 'left ', 'right ', 'inner ', 'full ', 'cross ', 'using ')):
+            return True
+        return False
+    return False
+
+
+def _extract_sql_segments(content: str) -> List[str]:
+    text_value = _normalize_text(content)
+    if not text_value:
+        return []
+
+    segments: List[str] = []
+    if _looks_like_sql_script(text_value):
+        segments.append(text_value)
+
+    for pattern in (
+        re.compile(r'(?is)(?:[rRuUfFbB]{0,3})?(?P<quote>"""|\'\'\')(?P<body>.*?)(?P=quote)'),
+        re.compile(r'(?is)\bexecute_sql\s*\(\s*(?:[rRuUfFbB]{0,3})?(?P<quote>"""|\'\'\')(?P<body>.*?)(?P=quote)'),
+        re.compile(r'(?is)\bexecute_sql\s*\(\s*(?:[rRuUfFbB]{0,3})?(?P<quote>[\'"])(?P<body>.*?)(?P=quote)'),
+    ):
+        for match in pattern.finditer(text_value):
+            body = _normalize_text(match.group('body'))
+            if body and _SQL_KEYWORDS_RE.search(body):
+                segments.append(body)
+
+    return list(dict.fromkeys(segments))
+
+
+def _extract_sql_lineage(content: str) -> Dict[str, Any]:
+    segments = _extract_sql_segments(content)
+    input_tables: List[str] = []
+    output_tables: List[str] = []
+    cte_names = set()
+
+    for segment in segments:
+        cleaned = _strip_sql_comments(segment)
+        for match in re.finditer(r'(?:\bWITH\b|,)\s*(' + _SQL_TABLE_TOKEN + r')\s+AS\s*\(', cleaned, re.IGNORECASE):
+            cte_name = _normalize_table_identifier(match.group(1))
+            if cte_name:
+                cte_names.add(cte_name.lower())
+
+    for segment in segments:
+        cleaned = _strip_sql_comments(segment)
+        for pattern in _SQL_OUTPUT_PATTERNS:
+            for match in pattern.finditer(cleaned):
+                table_name = _normalize_table_identifier(match.group(1))
+                if _is_lineage_table(table_name, cte_names=cte_names):
+                    output_tables.append(table_name)
+        for pattern in _SQL_INPUT_PATTERNS:
+            for match in pattern.finditer(cleaned):
+                table_name = _normalize_table_identifier(match.group(1))
+                if _is_lineage_table(table_name, cte_names=cte_names):
+                    input_tables.append(table_name)
+
+    for pattern in _PY_INPUT_TABLE_PATTERNS:
+        for match in pattern.finditer(content or ''):
+            table_name = _normalize_table_identifier(match.group(2))
+            if _is_lineage_table(table_name, cte_names=cte_names):
+                input_tables.append(table_name)
+    for pattern in _PY_OUTPUT_TABLE_PATTERNS:
+        for match in pattern.finditer(content or ''):
+            table_name = _normalize_table_identifier(match.group(2))
+            if _is_lineage_table(table_name, cte_names=cte_names):
+                output_tables.append(table_name)
+
+    input_tables = list(dict.fromkeys([table for table in input_tables if table]))
+    output_tables = list(dict.fromkeys([table for table in output_tables if table]))
+    parsed_config = {
+        'parsed_from_content': True,
+        'statement_type': 'sql' if segments else 'unknown',
+        'segment_count': len(segments),
+        'input_tables': input_tables,
+        'output_tables': output_tables,
+    }
+    return {
+        'input_list': input_tables,
+        'output_list': output_tables,
+        'dependent_node_ids': [],
+        'upstream_tables': input_tables,
+        'output_tables': output_tables,
+        'node_configuration': parsed_config,
+    }
+
+
+def _table_lookup_keys(table_name: Any) -> List[str]:
+    normalized = _normalize_table_identifier(table_name).lower()
+    if not normalized:
+        return []
+    keys = [normalized]
+    base_name = normalized.split('.')[-1]
+    if base_name and base_name != normalized:
+        keys.append(base_name)
+    return list(dict.fromkeys(keys))
+
+
+def _build_output_table_index(records: Sequence[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    index: Dict[str, List[Dict[str, Any]]] = {}
+    for record in records:
+        for table_name in _normalize_list(record.get('output_tables')):
+            for key in _table_lookup_keys(table_name):
+                index.setdefault(key, []).append(record)
+    return index
+
+
 def _extract_file_list(payload: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int]:
     data = payload.get('Data')
     if not isinstance(data, dict):
@@ -290,6 +473,7 @@ class RuntimeConfig:
     hologres_db: str = ''
     hologres_user: str = ''
     hologres_password: str = ''
+    dataworks_daily_api_limit: int = DEFAULT_DATAWORKS_DAILY_API_LIMIT
     dataworks_max_retries: int = DEFAULT_DATAWORKS_MAX_RETRIES
     dataworks_retry_base_seconds: float = DEFAULT_DATAWORKS_RETRY_BASE_SECONDS
     dataworks_retry_max_seconds: float = DEFAULT_DATAWORKS_RETRY_MAX_SECONDS
@@ -340,6 +524,7 @@ class RuntimeConfig:
             hologres_db=pick('HOLOGRES_DB'),
             hologres_user=pick('HOLOGRES_USER'),
             hologres_password=pick('HOLOGRES_PASSWORD'),
+            dataworks_daily_api_limit=max(0, pick_int('DATAWORKS_DAILY_API_LIMIT', DEFAULT_DATAWORKS_DAILY_API_LIMIT)),
             dataworks_max_retries=max(0, pick_int('DATAWORKS_MAX_RETRIES', DEFAULT_DATAWORKS_MAX_RETRIES)),
             dataworks_retry_base_seconds=max(
                 0.1,
@@ -385,9 +570,22 @@ class DataWorksApiError(RuntimeError):
         return self.status_code == 429 or 'throttl' in text or 'rate limit' in text
 
 
+class DataWorksQuotaExceeded(RuntimeError):
+    def __init__(self, usage_date: str, limit: int, used: int, *, action: str = ''):
+        message = f'DataWorks 每日额度已达上限: {usage_date} {used}/{limit}'
+        if action:
+            message = f'{message}，action={action}'
+        super().__init__(message)
+        self.usage_date = usage_date
+        self.limit = limit
+        self.used = used
+        self.action = action
+
+
 class DataWorksOpenAPIClient:
-    def __init__(self, cfg: RuntimeConfig):
+    def __init__(self, cfg: RuntimeConfig, quota_store: Optional['HologresKnowledgeStore'] = None):
         self.cfg = cfg
+        self.quota_store = quota_store
         self.timeout = DEFAULT_HTTP_TIMEOUT_SECONDS
 
     def is_configured(self) -> bool:
@@ -510,6 +708,8 @@ class DataWorksOpenAPIClient:
     def _request(self, action: str, params: Optional[Dict[str, Any]] = None, method: str = 'POST') -> Dict[str, Any]:
         for retry_index in range(self.cfg.dataworks_max_retries + 1):
             try:
+                if self.cfg.dataworks_daily_api_limit > 0 and self.quota_store is not None:
+                    self.quota_store.reserve_daily_api_call(self.cfg.dataworks_daily_api_limit, action=action)
                 result = self._request_once(action, params=params, method=method)
                 if self.cfg.dataworks_request_interval_seconds:
                     time.sleep(self.cfg.dataworks_request_interval_seconds)
@@ -533,6 +733,8 @@ class DataWorksOpenAPIClient:
             'PageNumber': page_number,
             'PageSize': min(max(1, DEFAULT_PAGE_SIZE), 100),
             'FileTypes': DEFAULT_FILE_TYPES,
+            'NeedContent': True,
+            'NeedAbsoluteFolderPath': True,
         }
         if self.cfg.dataworks_use_type:
             params['UseType'] = self.cfg.dataworks_use_type
@@ -576,6 +778,7 @@ class HologresKnowledgeStore:
     def __init__(self, cfg: RuntimeConfig):
         self.cfg = cfg
         self.table_fqdn = f'{DEFAULT_HOLOGRES_SCHEMA}.{DEFAULT_HOLOGRES_TABLE}'
+        self.api_usage_table_fqdn = f'{DEFAULT_HOLOGRES_SCHEMA}.dataworks_api_usage'
         self.conn = psycopg2.connect(
             host=cfg.hologres_host,
             port=DEFAULT_HOLOGRES_PORT,
@@ -585,6 +788,8 @@ class HologresKnowledgeStore:
         )
         self.conn.autocommit = False
         self.verify_schema_ready()
+        if self.cfg.dataworks_daily_api_limit > 0:
+            self.verify_api_usage_ready()
 
     def _schema_help(self) -> str:
         return (
@@ -610,6 +815,25 @@ class HologresKnowledgeStore:
             raise RuntimeError(f'无法检查 Hologres 知识表状态：{exc}') from exc
         if not exists:
             raise RuntimeError(self._schema_help())
+
+    def verify_api_usage_ready(self) -> None:
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS {self.api_usage_table_fqdn} (
+                usage_date DATE NOT NULL,
+                project_id BIGINT NOT NULL,
+                api_calls BIGINT NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (usage_date, project_id)
+            )
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(sql)
+            self.conn.commit()
+        except psycopg2.Error as exc:
+            self.conn.rollback()
+            raise RuntimeError(f'无法初始化 DataWorks 额度表：{exc}') from exc
 
     def existing_snapshot(self) -> Dict[str, Tuple[Optional[str], Optional[int]]]:
         snapshot: Dict[str, Tuple[Optional[str], Optional[int]]] = {}
@@ -641,7 +865,94 @@ class HologresKnowledgeStore:
             cursor.execute(sql, (DEFAULT_KNOWLEDGE_DB_NAME, self.cfg.project_id or 0, keys))
         return len(keys)
 
-    def upsert_records(self, records: Sequence[Dict[str, Any]]) -> int:
+    def lookup_record_row_id(self, node_key: str) -> Optional[int]:
+        key = _normalize_text(node_key)
+        if not key:
+            return None
+        sql = f"""
+            SELECT id
+            FROM {self.table_fqdn}
+            WHERE db_name = %s
+              AND project_id = %s
+              AND node_key = %s
+            LIMIT 1
+        """
+        with self.conn.cursor() as cursor:
+            cursor.execute(sql, (DEFAULT_KNOWLEDGE_DB_NAME, self.cfg.project_id or 0, key))
+            row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        try:
+            return int(row[0])
+        except Exception:
+            return None
+
+    def get_daily_api_usage(self, usage_date: Any = None) -> int:
+        if usage_date is None:
+            usage_date = datetime.now().date()
+        if isinstance(usage_date, datetime):
+            usage_date = usage_date.date()
+        sql = f"""
+            SELECT api_calls
+            FROM {self.api_usage_table_fqdn}
+            WHERE usage_date = %s
+              AND project_id = %s
+            LIMIT 1
+        """
+        with self.conn.cursor() as cursor:
+            cursor.execute(sql, (usage_date, self.cfg.project_id or 0))
+            row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def reserve_daily_api_call(self, limit: int, *, action: str = '') -> int:
+        if limit <= 0:
+            return 0
+        usage_date = datetime.now().date()
+        project_id = self.cfg.project_id or 0
+        insert_sql = f"""
+            INSERT INTO {self.api_usage_table_fqdn} (
+                usage_date, project_id, api_calls, created_at, updated_at
+            ) VALUES (%s, %s, 0, NOW(), NOW())
+            ON CONFLICT (usage_date, project_id) DO NOTHING
+        """
+        select_sql = f"""
+            SELECT api_calls
+            FROM {self.api_usage_table_fqdn}
+            WHERE usage_date = %s
+              AND project_id = %s
+            FOR UPDATE
+        """
+        update_sql = f"""
+            UPDATE {self.api_usage_table_fqdn}
+            SET api_calls = %s,
+                updated_at = NOW()
+            WHERE usage_date = %s
+              AND project_id = %s
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(insert_sql, (usage_date, project_id))
+                cursor.execute(select_sql, (usage_date, project_id))
+                row = cursor.fetchone()
+                current = int(row[0]) if row and row[0] is not None else 0
+                if current >= limit:
+                    self.conn.rollback()
+                    raise DataWorksQuotaExceeded(usage_date.isoformat(), limit, current, action=action)
+                new_count = current + 1
+                cursor.execute(update_sql, (new_count, usage_date, project_id))
+            self.conn.commit()
+            return new_count
+        except DataWorksQuotaExceeded:
+            raise
+        except psycopg2.Error as exc:
+            self.conn.rollback()
+            raise RuntimeError(f'无法更新 DataWorks 额度计数：{exc}') from exc
+
+    def upsert_records(
+        self,
+        records: Sequence[Dict[str, Any]],
+        existing_snapshot: Optional[Dict[str, Tuple[Optional[str], Optional[int]]]] = None,
+    ) -> int:
         if not records:
             return 0
         cols = [
@@ -654,48 +965,51 @@ class HologresKnowledgeStore:
             'node_configuration', 'file_payload',
             'text_hash', 'source_hash', 'last_seen_at', 'is_active', 'updated_at',
         ]
+        update_sql = f"""
+            UPDATE {self.table_fqdn}
+            SET project_identifier = %s,
+                workspace_region = %s,
+                node_id = %s,
+                file_id = %s,
+                node_name = %s,
+                file_name = %s,
+                file_folder_path = %s,
+                absolute_folder_path = %s,
+                file_type = %s,
+                use_type = %s,
+                connection_name = %s,
+                owner = %s,
+                last_edit_user = %s,
+                commit_status = %s,
+                auto_parsing = %s,
+                is_maxcompute = %s,
+                current_version = %s,
+                file_description = %s,
+                source_modified_at = %s,
+                content = %s,
+                input_list = %s,
+                output_list = %s,
+                dependent_node_ids = %s,
+                upstream_nodes = %s,
+                upstream_tables = %s,
+                output_tables = %s,
+                node_configuration = %s,
+                file_payload = %s,
+                text_hash = %s,
+                source_hash = %s,
+                last_seen_at = %s,
+                is_active = TRUE,
+                updated_at = %s
+            WHERE id = %s
+        """
         insert_sql = f"""
             INSERT INTO {self.table_fqdn} (
                 {', '.join(cols)}
             ) VALUES %s
-            ON CONFLICT (db_name, project_id, node_key) DO UPDATE SET
-                project_identifier = EXCLUDED.project_identifier,
-                workspace_region = EXCLUDED.workspace_region,
-                node_id = EXCLUDED.node_id,
-                file_id = EXCLUDED.file_id,
-                node_name = EXCLUDED.node_name,
-                file_name = EXCLUDED.file_name,
-                file_folder_path = EXCLUDED.file_folder_path,
-                absolute_folder_path = EXCLUDED.absolute_folder_path,
-                file_type = EXCLUDED.file_type,
-                use_type = EXCLUDED.use_type,
-                connection_name = EXCLUDED.connection_name,
-                owner = EXCLUDED.owner,
-                last_edit_user = EXCLUDED.last_edit_user,
-                commit_status = EXCLUDED.commit_status,
-                auto_parsing = EXCLUDED.auto_parsing,
-                is_maxcompute = EXCLUDED.is_maxcompute,
-                current_version = EXCLUDED.current_version,
-                file_description = EXCLUDED.file_description,
-                source_modified_at = EXCLUDED.source_modified_at,
-                content = EXCLUDED.content,
-                input_list = EXCLUDED.input_list,
-                output_list = EXCLUDED.output_list,
-                dependent_node_ids = EXCLUDED.dependent_node_ids,
-                upstream_nodes = EXCLUDED.upstream_nodes,
-                upstream_tables = EXCLUDED.upstream_tables,
-                output_tables = EXCLUDED.output_tables,
-                node_configuration = EXCLUDED.node_configuration,
-                file_payload = EXCLUDED.file_payload,
-                text_hash = EXCLUDED.text_hash,
-                source_hash = EXCLUDED.source_hash,
-                last_seen_at = EXCLUDED.last_seen_at,
-                is_active = TRUE,
-                updated_at = EXCLUDED.updated_at
         """
-        rows = []
-        for record in records:
-            rows.append((
+
+        def build_row(record: Dict[str, Any]) -> tuple:
+            return (
                 record['db_name'],
                 record['project_id'],
                 record.get('project_identifier'),
@@ -732,32 +1046,92 @@ class HologresKnowledgeStore:
                 record.get('last_seen_at'),
                 True,
                 record.get('updated_at'),
-            ))
+            )
+
+        update_params = []
+        insert_params = []
+        for record in records:
+            node_key = _normalize_text(record.get('node_key'))
+            row_id = None
+            if existing_snapshot:
+                _snapshot = existing_snapshot.get(node_key)
+                if _snapshot:
+                    row_id = _snapshot[1]
+            if row_id is None:
+                row_id = self.lookup_record_row_id(node_key)
+
+            if row_id is None:
+                insert_params.append(build_row(record))
+            else:
+                update_params.append((
+                    record.get('project_identifier'),
+                    record.get('workspace_region'),
+                    record.get('node_id'),
+                    record.get('file_id'),
+                    record.get('node_name'),
+                    record.get('file_name'),
+                    record.get('file_folder_path'),
+                    record.get('absolute_folder_path'),
+                    record.get('file_type'),
+                    record.get('use_type'),
+                    record.get('connection_name'),
+                    record.get('owner'),
+                    record.get('last_edit_user'),
+                    record.get('commit_status'),
+                    record.get('auto_parsing'),
+                    record.get('is_maxcompute'),
+                    record.get('current_version'),
+                    record.get('file_description'),
+                    record.get('source_modified_at'),
+                    record.get('content'),
+                    Json(record.get('input_list') or [], dumps=_json_dumps),
+                    Json(record.get('output_list') or [], dumps=_json_dumps),
+                    Json(record.get('dependent_node_ids') or [], dumps=_json_dumps),
+                    Json(record.get('upstream_nodes') or [], dumps=_json_dumps),
+                    Json(record.get('upstream_tables') or [], dumps=_json_dumps),
+                    Json(record.get('output_tables') or [], dumps=_json_dumps),
+                    Json(record.get('node_configuration') or {}, dumps=_json_dumps),
+                    Json(record.get('file_payload') or {}, dumps=_json_dumps),
+                    record.get('text_hash'),
+                    record.get('source_hash'),
+                    record.get('last_seen_at'),
+                    record.get('updated_at'),
+                    row_id,
+                ))
 
         with self.conn.cursor() as cursor:
-            execute_values(cursor, insert_sql, rows, page_size=100)
+            if update_params:
+                cursor.executemany(update_sql, update_params)
+            if insert_params:
+                execute_values(cursor, insert_sql, insert_params, page_size=100)
         self.conn.commit()
-        return len(rows)
+        return len(update_params) + len(insert_params)
 
 
 class DataWorksSyncJob:
     def __init__(self, cfg: RuntimeConfig):
         self.cfg = cfg
-        self.client = DataWorksOpenAPIClient(cfg)
         self.store = HologresKnowledgeStore(cfg)
+        self.client = DataWorksOpenAPIClient(
+            cfg,
+            quota_store=self.store if cfg.dataworks_daily_api_limit > 0 else None,
+        )
 
-    def _fetch_all_files(self) -> List[Dict[str, Any]]:
+    def _fetch_all_files(self) -> Tuple[List[Dict[str, Any]], bool]:
         files: List[Dict[str, Any]] = []
         page_number = 1
         while page_number <= DEFAULT_MAX_PAGES:
-            payload = self.client.list_files(page_number=page_number)
+            try:
+                payload = self.client.list_files(page_number=page_number)
+            except DataWorksQuotaExceeded:
+                return files, False
             page_files = payload.get('files') or []
             files.extend(page_files)
             total_count = payload.get('total_count') or len(files)
             if len(files) >= total_count or len(page_files) < min(max(1, DEFAULT_PAGE_SIZE), 100):
                 break
             page_number += 1
-        return files
+        return files, True
 
     def _merge_file_records(self, list_file: Dict[str, Any], detail_file: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         merged = dict(list_file or {})
@@ -772,22 +1146,42 @@ class DataWorksSyncJob:
             return None
 
         node_key = node_id or file_id
-        node_config = _extract_node_config(merged)
         content = _extract_content(merged)
-        input_list = _normalize_list(node_config.get('InputList') or node_config.get('inputList') or node_config.get('Inputs'))
-        output_list = _normalize_list(node_config.get('OutputList') or node_config.get('outputList') or node_config.get('Outputs'))
+        content_lineage = _extract_sql_lineage(content)
+        node_config = _extract_node_config(merged)
+        input_list = _normalize_list(
+            node_config.get('InputList')
+            or node_config.get('inputList')
+            or node_config.get('Inputs')
+            or content_lineage.get('input_list')
+        )
+        output_list = _normalize_list(
+            node_config.get('OutputList')
+            or node_config.get('outputList')
+            or node_config.get('Outputs')
+            or content_lineage.get('output_list')
+        )
         dependent_node_ids = _split_ids(
             node_config.get('DependentNodeIdList')
             or node_config.get('dependentNodeIdList')
             or node_config.get('DependentNodeIds')
             or node_config.get('dependentNodeIds')
+            or content_lineage.get('dependent_node_ids')
         )
-        output_tables = _extract_table_names(output_list)
-        upstream_tables = _extract_table_names(input_list)
+        output_tables = _extract_table_names(output_list) or list(content_lineage.get('output_tables') or [])
+        upstream_tables = _extract_table_names(input_list) or list(content_lineage.get('upstream_tables') or [])
+
+        derived_node_configuration = dict(node_config) if node_config else {}
+        content_node_configuration = content_lineage.get('node_configuration') or {}
+        if content_node_configuration:
+            if derived_node_configuration:
+                derived_node_configuration.setdefault('_content_lineage', content_node_configuration)
+            else:
+                derived_node_configuration = content_node_configuration
 
         source_payload = {
             'file': merged,
-            'node_config': node_config,
+            'node_config': derived_node_configuration,
             'content': content,
             'input_list': input_list,
             'output_list': output_list,
@@ -876,7 +1270,7 @@ class DataWorksSyncJob:
             'upstream_nodes': [],
             'upstream_tables': upstream_tables,
             'output_tables': output_tables,
-            'node_configuration': node_config,
+            'node_configuration': derived_node_configuration,
             'file_payload': merged,
             'text_hash': text_hash,
             'source_hash': source_hash,
@@ -884,14 +1278,11 @@ class DataWorksSyncJob:
             'updated_at': datetime.now(),
         }
 
-    def _attach_dependency_nodes(self, records: List[Dict[str, Any]]) -> None:
-        node_map: Dict[str, Dict[str, Any]] = {}
-        for record in records:
-            for key in (record.get('node_key'), record.get('node_id')):
-                key_text = _normalize_text(key)
-                if key_text:
-                    node_map[key_text] = record
-
+    def _attach_dependency_nodes(
+        self,
+        records: List[Dict[str, Any]],
+        node_map: Dict[str, Dict[str, Any]],
+    ) -> None:
         for record in records:
             node_id = _normalize_text(record.get('node_id'))
             if not node_id:
@@ -912,15 +1303,22 @@ class DataWorksSyncJob:
             except Exception as exc:
                 raise RuntimeError(f"获取 DataWorks 节点依赖失败：node_id={node_id}。{exc}") from exc
 
-            upstream_nodes = []
+            upstream_nodes = list(record.get('upstream_nodes') or [])
             upstream_names = []
-            upstream_tables = list(record.get('upstream_tables') or [])
+            upstream_tables = list(dict.fromkeys([table for table in (record.get('upstream_tables') or []) if table]))
             dependent_node_ids = list(dict.fromkeys(_split_ids(record.get('dependent_node_ids'))))
+            existing_node_keys = {
+                _normalize_text(item.get('node_key') or item.get('node_id'))
+                for item in upstream_nodes
+                if isinstance(item, dict)
+            }
 
             for dep in dependencies:
                 dep_norm = _normalize_dependency_node(dep)
                 dep_key = _normalize_text(dep_norm.get('node_key') or dep_norm.get('node_id'))
                 if not dep_key:
+                    continue
+                if dep_key in existing_node_keys:
                     continue
                 dep_record = node_map.get(dep_key) or node_map.get(_normalize_text(dep_norm.get('node_id')))
                 if dep_record:
@@ -929,6 +1327,7 @@ class DataWorksSyncJob:
                     dep_norm['absolute_folder_path'] = dep_record.get('absolute_folder_path') or dep_norm.get('absolute_folder_path') or ''
                     dep_norm['output_tables'] = list(dict.fromkeys(list(dep_norm.get('output_tables') or []) + list(dep_record.get('output_tables') or [])))
                 upstream_nodes.append(dep_norm)
+                existing_node_keys.add(dep_key)
                 name = _normalize_text(dep_norm.get('node_name') or dep_norm.get('file_name') or dep_key)
                 if name:
                     upstream_names.append(name)
@@ -962,6 +1361,77 @@ class DataWorksSyncJob:
                 'output_tables': record.get('output_tables') or [],
             })
 
+    def _attach_table_lineage(self, records: List[Dict[str, Any]]) -> int:
+        if not records:
+            return 0
+        output_index = _build_output_table_index(records)
+        enriched = 0
+        for record in records:
+            current_node_key = _normalize_text(record.get('node_key'))
+            upstream_tables = list(dict.fromkeys([table for table in _normalize_list(record.get('upstream_tables')) if _normalize_text(table)]))
+            upstream_nodes = list(record.get('upstream_nodes') or [])
+            dependent_node_ids = list(dict.fromkeys(_split_ids(record.get('dependent_node_ids'))))
+            existing_node_keys = {
+                _normalize_text(item.get('node_key') or item.get('node_id'))
+                for item in upstream_nodes
+                if isinstance(item, dict)
+            }
+            added = False
+
+            for table_name in upstream_tables:
+                matched_records = []
+                for key in _table_lookup_keys(table_name):
+                    matched_records = output_index.get(key, [])
+                    if matched_records:
+                        break
+                for producer in matched_records:
+                    producer_key = _normalize_text(producer.get('node_key') or producer.get('node_id'))
+                    if not producer_key or producer_key == current_node_key or producer_key in existing_node_keys:
+                        continue
+                    producer_node = {
+                        'node_id': producer.get('node_id'),
+                        'node_key': producer.get('node_key'),
+                        'node_name': producer.get('node_name'),
+                        'file_name': producer.get('file_name'),
+                        'absolute_folder_path': producer.get('absolute_folder_path'),
+                        'input_tables': list(producer.get('input_list') or []),
+                        'output_tables': list(producer.get('output_tables') or []),
+                        'dependent_node_ids': list(dict.fromkeys(_split_ids(producer.get('dependent_node_ids')))),
+                        'source': 'table_lineage',
+                        'matched_table': _normalize_table_identifier(table_name),
+                    }
+                    upstream_nodes.append(producer_node)
+                    existing_node_keys.add(producer_key)
+                    dependent_node_ids.append(producer_key)
+                    added = True
+
+            record['upstream_nodes'] = upstream_nodes
+            record['dependent_node_ids'] = list(dict.fromkeys([key for key in dependent_node_ids if key]))
+            record['text_hash'] = _safe_json_hash({
+                'node_name': record.get('node_name') or '',
+                'file_name': record.get('file_name') or '',
+                'absolute_folder_path': record.get('absolute_folder_path') or '',
+                'content': record.get('content') or '',
+                'dependent_node_ids': record.get('dependent_node_ids') or [],
+                'upstream_nodes': record.get('upstream_nodes') or [],
+                'upstream_tables': record.get('upstream_tables') or [],
+                'output_tables': record.get('output_tables') or [],
+            })
+            record['source_hash'] = _safe_json_hash({
+                'file': record.get('file_payload') or {},
+                'node_config': record.get('node_configuration') or {},
+                'content': record.get('content') or '',
+                'input_list': record.get('input_list') or [],
+                'output_list': record.get('output_list') or [],
+                'dependent_node_ids': record.get('dependent_node_ids') or [],
+                'upstream_nodes': record.get('upstream_nodes') or [],
+                'upstream_tables': record.get('upstream_tables') or [],
+                'output_tables': record.get('output_tables') or [],
+            })
+            if added:
+                enriched += 1
+        return enriched
+
     def _get_sync_stats(self, records: Sequence[Dict[str, Any]], snapshot: Dict[str, Tuple[Optional[str], Optional[int]]]) -> Tuple[Dict[str, int], List[str]]:
         stats = {'new': 0, 'changed': 0, 'unchanged': 0, 'removed': 0}
         current_keys = []
@@ -984,14 +1454,21 @@ class DataWorksSyncJob:
 
     def run(self) -> Dict[str, Any]:
         if not self.client.is_configured():
-            raise RuntimeError('请在 MANUAL_CONFIG 里配置 DATAWORKS_ACCESS_KEY_ID / DATAWORKS_ACCESS_KEY_SECRET / DATAWORKS_PROJECT_ID')
+            raise RuntimeError('请通过环境变量或 .env 配置 DATAWORKS_ACCESS_KEY_ID / DATAWORKS_ACCESS_KEY_SECRET / DATAWORKS_PROJECT_ID')
         if not self.cfg.hologres_host or not self.cfg.hologres_db or not self.cfg.hologres_user or not self.cfg.hologres_password:
             raise RuntimeError(
-                '请在 MANUAL_CONFIG 里配置 Hologres 连接信息：HOLOGRES_HOST / HOLOGRES_DB / HOLOGRES_USER / HOLOGRES_PASSWORD'
+                '请通过环境变量或 .env 配置 Hologres 连接信息：HOLOGRES_HOST / HOLOGRES_DB / HOLOGRES_USER / HOLOGRES_PASSWORD'
             )
 
-        files = self._fetch_all_files()
+        usage_date = datetime.now().date()
+        snapshot = self.store.existing_snapshot()
+        files, files_complete = self._fetch_all_files()
         records: List[Dict[str, Any]] = []
+        node_map: Dict[str, Dict[str, Any]] = {}
+        detail_loaded = 0
+        dependency_enriched = 0
+        quota_exhausted = not files_complete
+
         for raw_file in files:
             node_id = _normalize_text(raw_file.get('NodeId') or raw_file.get('node_id'))
             file_id = _normalize_text(raw_file.get('FileId') or raw_file.get('file_id'))
@@ -1005,35 +1482,66 @@ class DataWorksSyncJob:
                 raise RuntimeError(
                     f"ListFiles 返回的文件缺少 FileId/NodeId，无法调用 GetFile：file_name={file_name or '<unknown>'}"
                 )
-            try:
-                detail = self.client.get_file(file_id=file_id) if file_id else self.client.get_file(node_id=node_id)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"获取 DataWorks 文件详情失败：file_id={file_id or '<empty>'}, "
-                    f"node_id={node_id or '<empty>'}, file_name={file_name or '<unknown>'}。{exc}"
-                ) from exc
+            detail: Dict[str, Any] = {}
+            if not quota_exhausted:
+                try:
+                    detail = self.client.get_file(file_id=file_id) if file_id else self.client.get_file(node_id=node_id)
+                    detail_loaded += 1
+                except DataWorksQuotaExceeded as exc:
+                    quota_exhausted = True
+                    print(f"   ⚠️ {exc}")
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"获取 DataWorks 文件详情失败：file_id={file_id or '<empty>'}, "
+                        f"node_id={node_id or '<empty>'}, file_name={file_name or '<unknown>'}。{exc}"
+                    ) from exc
             record = self._merge_file_records(raw_file, detail)
             if record:
+                current_ts = datetime.now()
+                record['last_seen_at'] = current_ts
+                record['updated_at'] = current_ts
+                self.store.upsert_records([record], existing_snapshot=snapshot)
                 records.append(record)
+                for key in (record.get('node_key'), record.get('node_id')):
+                    key_text = _normalize_text(key)
+                    if key_text:
+                        node_map[key_text] = record
 
-        self._attach_dependency_nodes(records)
+        if not quota_exhausted:
+            for record in records:
+                node_id = _normalize_text(record.get('node_id'))
+                if not node_id:
+                    continue
+                try:
+                    self._attach_dependency_nodes([record], node_map)
+                except DataWorksQuotaExceeded as exc:
+                    quota_exhausted = True
+                    print(f"   ⚠️ {exc}")
+                    break
+                current_ts = datetime.now()
+                record['last_seen_at'] = current_ts
+                record['updated_at'] = current_ts
+                self.store.upsert_records([record], existing_snapshot=snapshot)
+                dependency_enriched += 1
+                for key in (record.get('node_key'), record.get('node_id')):
+                    key_text = _normalize_text(key)
+                    if key_text:
+                        node_map[key_text] = record
 
-        snapshot = self.store.existing_snapshot()
-        stats, removed_keys = self._get_sync_stats(records, snapshot)
+        table_lineage_enriched = self._attach_table_lineage(records)
 
-        print(f"   ├─ 节点总数: {len(records)}")
-        print(f"   ├─ 新增 {stats['new']}, 修改 {stats['changed']}, 不变 {stats['unchanged']}, 移除 {stats['removed']}")
-
-        current_ts = datetime.now()
         for record in records:
+            current_ts = datetime.now()
             record['last_seen_at'] = current_ts
             record['updated_at'] = current_ts
+            self.store.upsert_records([record], existing_snapshot=snapshot)
 
-        if removed_keys:
-            self.store.deactivate_missing(removed_keys)
-
-        if records:
-            self.store.upsert_records(records)
+        daily_api_used = None
+        if self.cfg.dataworks_daily_api_limit > 0:
+            try:
+                daily_api_used = self.store.get_daily_api_usage(usage_date)
+            except Exception:
+                daily_api_used = None
 
         result = {
             'ok': True,
@@ -1041,10 +1549,33 @@ class DataWorksSyncJob:
             'project_id': self.cfg.project_id,
             'files': len(files),
             'processed': len(records),
-            'stats': stats,
-            'removed_keys': removed_keys[:50],
-            'sync_mode': 'content_only',
+            'detail_loaded': detail_loaded,
+            'dependency_enriched': dependency_enriched,
+            'quota_exhausted': quota_exhausted,
+            'table_lineage_enriched': table_lineage_enriched,
+            'daily_api_limit': self.cfg.dataworks_daily_api_limit,
+            'daily_api_used': daily_api_used,
+            'daily_api_remaining': (
+                max(0, self.cfg.dataworks_daily_api_limit - daily_api_used)
+                if daily_api_used is not None and self.cfg.dataworks_daily_api_limit > 0
+                else None
+            ),
+            'sync_mode': 'streaming_incremental',
         }
+
+        if quota_exhausted:
+            result['phase'] = 'quota_exhausted'
+            print(f"   ⚠️ DataWorks 每日额度已用完，已保存 {len(records)} 条记录，本次同步暂停")
+        else:
+            stats, removed_keys = self._get_sync_stats(records, snapshot)
+            print(f"   ├─ 节点总数: {len(records)}")
+            print(f"   ├─ 新增 {stats['new']}, 修改 {stats['changed']}, 不变 {stats['unchanged']}, 移除 {stats['removed']}")
+            if removed_keys:
+                self.store.deactivate_missing(removed_keys)
+            result['stats'] = stats
+            result['removed_keys'] = removed_keys[:50]
+            result['phase'] = 'complete'
+
         print(json.dumps(result, ensure_ascii=False, indent=2, default=_json_default))
         return result
 

@@ -39,6 +39,7 @@ from core.upload_match_template_repo import (
     delete_upload_match_template_record,
     load_upload_match_templates_config,
     seed_upload_match_templates_from_config,
+    update_upload_match_template_enabled,
     upsert_upload_match_template,
 )
 
@@ -1948,7 +1949,8 @@ def upload_match_templates():
         return jsonify({'error': 'missing db_name'}), 400
     try:
         db_config = _load_upload_match_db_config(db_name)
-        templates = get_upload_match_templates(db_name, db_config=db_config)
+        include_disabled = request.args.get('include_disabled', '').strip().lower() in {'1', 'true', 'yes'}
+        templates = get_upload_match_templates(db_name, db_config=db_config, enabled_only=not include_disabled)
         return jsonify({'status': 'success', 'templates': templates})
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -2003,7 +2005,7 @@ def upload_excel_preview():
         return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
-@main_bp.route('/api/upload_match_configs', methods=['GET', 'POST', 'DELETE'])
+@main_bp.route('/api/upload_match_configs', methods=['GET', 'POST', 'PATCH', 'DELETE'])
 def upload_match_configs_api():
     """读取、保存或删除上传匹配模板配置"""
     if request.method == 'GET':
@@ -2046,6 +2048,30 @@ def upload_match_configs_api():
                 'db_name': db_name,
                 'db_config': db_config,
                 'knowledge_sync': knowledge_sync,
+            })
+
+        if request.method == 'PATCH':
+            template_key = (data.get('template_key') or '').strip()
+            if not template_key:
+                return jsonify({'error': 'missing template_key', 'status': 'error'}), 400
+            if 'is_enabled' not in data:
+                return jsonify({'error': 'missing is_enabled', 'status': 'error'}), 400
+            if template_key not in db_config:
+                return jsonify({'error': 'template not found', 'status': 'error'}), 404
+            update_upload_match_template_enabled(
+                db_name,
+                template_key,
+                data.get('is_enabled'),
+                current_user=get_current_user(),
+            )
+            db_config = dict(_load_upload_match_db_config(db_name, seed_from_legacy=False))
+            return jsonify({
+                'status': 'success',
+                'db_name': db_name,
+                'template_key': template_key,
+                'is_enabled': bool((db_config.get(template_key) or {}).get('is_enabled', True)),
+                'db_config': db_config,
+                'templates': get_upload_match_templates(db_name, db_config=db_config),
             })
 
         template_key = (data.get('template_key') or '').strip() or 'default'
@@ -2336,12 +2362,20 @@ def handle_nl_query():
         use_vector_search = data.get('use_vector_search', True)
         top_k_tables = data.get('top_k_tables', 10)
         embedding_provider = data.get('embedding_provider', '').strip() or None
+        query_context_mode = (
+            data.get('query_context_mode')
+            or data.get('context_mode')
+            or data.get('mode')
+            or ''
+        )
+        query_context_mode = str(query_context_mode).strip() or None
 
         print(f"\n{'='*60}")
         print(f"📨 查询: {db_name} - {data['nl_query'][:100]}...")
         print(f"   request_id: {request_id}")
         print(f"   向量检索: {use_vector_search}, 指定表: {selected_table}, schema: {schema_name}")
         print(f"   向量模型: {embedding_provider or '默认'}")
+        print(f"   上下文模式: {query_context_mode or schema_name or '默认'}")
         print(f"{'='*60}")
 
         current_user_data = get_current_user()
@@ -2357,6 +2391,7 @@ def handle_nl_query():
             cancel_token=cancel_token,
             embedding_provider=embedding_provider,
             request_id=request_id,
+            query_context_mode=query_context_mode,
         )
 
         elapsed = (time.time() - start_time) * 1000

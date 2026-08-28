@@ -124,6 +124,12 @@ Hologres 类型不一致会直接报错，必须主动加显式转换：
 ## 业务名词解释（必读，理解业务术语后再生成 SQL）：
 {formatted_glossary}
 
+## DataWorks 节点代码与上游血缘（按问题检索到的相关节点）：
+{formatted_dataworks}
+
+## 仓库代码知识（函数/类/文件级上下文，按问题检索到的相关代码）：
+{formatted_book}
+
 ## 知识库示例：
 {formatted_knowledge}"""
 

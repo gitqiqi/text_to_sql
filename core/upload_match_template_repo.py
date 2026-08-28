@@ -41,6 +41,21 @@ def _json_loads_list(value: Any) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text_value = str(value).strip().lower()
+    if text_value in ('1', 'true', 't', 'yes', 'y', 'on', 'enabled'):
+        return True
+    if text_value in ('0', 'false', 'f', 'no', 'n', 'off', 'disabled'):
+        return False
+    return default
+
+
 def _format_timestamp(value: Any) -> str:
     if not value:
         return ''
@@ -93,6 +108,7 @@ def ensure_upload_match_template_table(db_name: str) -> None:
             return_fields_json TEXT,
             config_json TEXT,
             status TEXT DEFAULT 'active',
+            is_enabled BOOLEAN DEFAULT TRUE,
             created_by TEXT,
             updated_by TEXT,
             created_by_admin_id BIGINT,
@@ -107,6 +123,7 @@ def ensure_upload_match_template_table(db_name: str) -> None:
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS return_fields_json TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS config_json TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
+        "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT TRUE",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_by TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS updated_by TEXT",
         "ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_by_admin_id BIGINT",
@@ -118,6 +135,7 @@ def ensure_upload_match_template_table(db_name: str) -> None:
     ]
     dml_statements = [
         "UPDATE knowledge.upload_match_template SET status = 'active' WHERE status IS NULL",
+        "UPDATE knowledge.upload_match_template SET is_enabled = TRUE WHERE is_enabled IS NULL",
     ]
 
     with engine.begin() as conn:
@@ -149,6 +167,10 @@ def _row_to_template_config(mapping: Dict[str, Any]) -> Dict:
         value = mapping.get(field)
         if value is not None:
             config[field] = str(value)
+    config['is_enabled'] = _coerce_bool(
+        mapping.get('is_enabled'),
+        default=_coerce_bool(config.get('is_enabled'), True),
+    )
 
     return_fields = _json_loads_list(mapping.get('return_fields_json'))
     if return_fields or 'return_fields' not in config:
@@ -196,6 +218,7 @@ def load_upload_match_templates_config(db_name: str) -> Dict[str, Dict]:
                     return_fields_json,
                     config_json,
                     status,
+                    is_enabled,
                     created_by,
                     updated_by,
                     created_by_admin_id,
@@ -291,6 +314,7 @@ def upsert_upload_match_template(
         'return_fields_json': _json_dumps(config.get('return_fields') or []),
         'config_json': _json_dumps(config),
         'status': 'active',
+        'is_enabled': _coerce_bool(config.get('is_enabled'), True),
         'created_by': str(config.get('created_by') or actor).strip() or 'system',
         'updated_by': actor,
         'created_by_admin_id': (current_user or {}).get('admin_id'),
@@ -310,7 +334,7 @@ def upsert_upload_match_template(
                     db_name, template_key, label, description, keyword_column,
                     match_table, match_field, match_field_display, match_mode,
                     target_filter, sql_text, return_fields_json, config_json,
-                    status, created_by, updated_by,
+                    status, is_enabled, created_by, updated_by,
                     created_by_admin_id, created_by_user_name,
                     updated_by_admin_id, updated_by_user_name,
                     created_at, updated_at
@@ -318,7 +342,7 @@ def upsert_upload_match_template(
                     :db_name, :template_key, :label, :description, :keyword_column,
                     :match_table, :match_field, :match_field_display, :match_mode,
                     :target_filter, :sql_text, :return_fields_json, :config_json,
-                    :status, :created_by, :updated_by,
+                    :status, :is_enabled, :created_by, :updated_by,
                     :created_by_admin_id, :created_by_user_name,
                     :updated_by_admin_id, :updated_by_user_name,
                     COALESCE(:created_at, NOW()), COALESCE(:updated_at, NOW())
@@ -336,6 +360,7 @@ def upsert_upload_match_template(
                     return_fields_json = EXCLUDED.return_fields_json,
                     config_json = EXCLUDED.config_json,
                     status = EXCLUDED.status,
+                    is_enabled = EXCLUDED.is_enabled,
                     created_by = COALESCE(knowledge.upload_match_template.created_by, EXCLUDED.created_by),
                     updated_by = EXCLUDED.updated_by,
                     created_by_admin_id = COALESCE(knowledge.upload_match_template.created_by_admin_id, EXCLUDED.created_by_admin_id),
@@ -345,6 +370,40 @@ def upsert_upload_match_template(
                     updated_at = COALESCE(EXCLUDED.updated_at, NOW())
             """),
             params,
+        )
+
+
+def update_upload_match_template_enabled(
+    db_name: str,
+    template_key: str,
+    is_enabled: Any,
+    current_user: Optional[Dict] = None,
+) -> None:
+    actor = _display_user(current_user)
+    user_name = (current_user or {}).get('user_name') or actor
+    ensure_upload_match_template_table(db_name)
+    engine = DatabasePoolManager.get_engine(db_name)
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE knowledge.upload_match_template
+                SET is_enabled = :is_enabled,
+                    updated_by = :updated_by,
+                    updated_by_admin_id = :updated_by_admin_id,
+                    updated_by_user_name = :updated_by_user_name,
+                    updated_at = NOW()
+                WHERE db_name = :db_name
+                  AND template_key = :template_key
+                  AND COALESCE(status, 'active') <> 'delete'
+            """),
+            {
+                'db_name': db_name,
+                'template_key': template_key,
+                'is_enabled': _coerce_bool(is_enabled, True),
+                'updated_by': actor,
+                'updated_by_admin_id': (current_user or {}).get('admin_id'),
+                'updated_by_user_name': user_name,
+            },
         )
 
 

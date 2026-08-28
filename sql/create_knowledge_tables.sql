@@ -187,6 +187,7 @@ CREATE TABLE IF NOT EXISTS knowledge.upload_match_template (
     return_fields_json TEXT,
     config_json TEXT,
     status TEXT DEFAULT 'active',
+    is_enabled BOOLEAN DEFAULT TRUE,
     created_by TEXT,
     updated_by TEXT,
     created_by_admin_id BIGINT,
@@ -201,6 +202,7 @@ CREATE TABLE IF NOT EXISTS knowledge.upload_match_template (
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS return_fields_json TEXT;
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS config_json TEXT;
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT TRUE;
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_by TEXT;
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS updated_by TEXT;
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_by_admin_id BIGINT;
@@ -211,6 +213,7 @@ ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS created_at 
 ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 -- Hologres 中如果客户端开启显式事务，请在 ALTER 提交后单独执行下面的 UPDATE。
 UPDATE knowledge.upload_match_template SET status = 'active' WHERE status IS NULL;
+UPDATE knowledge.upload_match_template SET is_enabled = TRUE WHERE is_enabled IS NULL;
 
 -- 查询运行日志
 CREATE TABLE IF NOT EXISTS knowledge.query_log (

@@ -73,6 +73,15 @@ def normalize_upload_template_label(value: str) -> str:
     return re.sub(r'\s+', ' ', str(value or '').strip()).lower()
 
 
+def _is_upload_template_enabled(config: Dict) -> bool:
+    value = (config or {}).get('is_enabled', True)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() not in {'0', 'false', 'f', 'no', 'n', 'off', 'disabled'}
+
+
 # ==================== 数据库配置（仅保留PostgreSQL和SQLite） ====================
 DATABASE_CONFIGS = {
     'hologres': {
@@ -219,7 +228,11 @@ def get_upload_match_config(
     return merged
 
 
-def get_upload_match_templates(db_name: str, db_config: Optional[Dict] = None) -> List[Dict]:
+def get_upload_match_templates(
+    db_name: str,
+    db_config: Optional[Dict] = None,
+    enabled_only: bool = True,
+) -> List[Dict]:
     """获取该数据库下可供前端展示的模板列表"""
     db_config = db_config if isinstance(db_config, dict) else (get_upload_match_configs().get(db_name) or {})
     template_items: List[tuple[str, Dict, str, str]] = []
@@ -227,6 +240,9 @@ def get_upload_match_templates(db_name: str, db_config: Optional[Dict] = None) -
 
     for template_key, template_config in db_config.items():
         if template_key == 'default' or not isinstance(template_config, dict):
+            continue
+        is_enabled = _is_upload_template_enabled(template_config)
+        if enabled_only and not is_enabled:
             continue
         label = (template_config.get('label') or template_config.get('name') or template_key or '').strip()
         normalized = normalize_upload_template_label(label)
@@ -257,5 +273,6 @@ def get_upload_match_templates(db_name: str, db_config: Optional[Dict] = None) -
             'created_at': template_config.get('created_at') or '',
             'updated_at': template_config.get('updated_at') or '',
             'return_count': enabled_count,
+            'is_enabled': is_enabled,
         })
     return templates
