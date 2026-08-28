@@ -3847,6 +3847,7 @@
 
         function renderCanvasSelectOptions(values = [], selectedValue = '', placeholder = '请选择') {
             const selected = String(selectedValue || '').trim();
+            const selectedNormalized = selected.toLowerCase();
             const seen = new Set();
             const safeValues = Array.isArray(values)
                 ? values.map(value => String(value || '').trim()).filter(Boolean)
@@ -3865,7 +3866,8 @@
                 const normalized = value.toLowerCase();
                 if (seen.has(normalized)) return;
                 seen.add(normalized);
-                options.push(`<option value="${escapeAttr(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(value)}</option>`);
+                const isSelected = selected && normalized === selectedNormalized;
+                options.push(`<option value="${escapeAttr(value)}" ${isSelected ? 'selected' : ''}>${escapeHtml(value)}</option>`);
             });
 
             return options.join('');
@@ -3900,6 +3902,15 @@
         function getActiveTemplateConfig() {
             const key = getActiveTemplateKey();
             return key ? (uploadMatchConfigs[key] || {}) : {};
+        }
+
+        function upsertUploadMatchConfigSnapshot(templateKey = '', config = {}) {
+            const key = String(templateKey || '').trim();
+            if (!key || !config || typeof config !== 'object') return;
+            uploadMatchConfigs[key] = {
+                ...(uploadMatchConfigs[key] || {}),
+                ...config,
+            };
         }
 
         function getTemplateEntries() {
@@ -4190,11 +4201,21 @@
         }
 
         function collectCanvasReturnFieldRows() {
-            return Array.from(document.querySelectorAll('.match-canvas-field-row')).map(row => ({
-                db_field: row.querySelector('.match-canvas-db-field')?.value?.trim() || '',
-                business_field: row.querySelector('.match-canvas-business-field')?.value?.trim() || '',
-                enabled: true,
-            })).filter(item => item.db_field || item.business_field);
+            return Array.from(document.querySelectorAll('.match-canvas-field-row')).map(row => {
+                const dbFieldControl = row.querySelector('.match-canvas-db-field');
+                const businessFieldControl = row.querySelector('.match-canvas-business-field');
+                const selectedOptionValue = dbFieldControl?.selectedOptions?.[0]?.value?.trim() || '';
+                const dbField = dbFieldControl?.value?.trim()
+                    || selectedOptionValue
+                    || String(row.dataset.dbField || '').trim();
+                const businessField = businessFieldControl?.value?.trim()
+                    || String(row.dataset.businessField || '').trim();
+                return {
+                    db_field: dbField,
+                    business_field: businessField,
+                    enabled: true,
+                };
+            }).filter(item => item.db_field || item.business_field);
         }
 
         function getOuterTemplateMatchFieldSnapshot(previousConfig = {}) {
@@ -4222,14 +4243,19 @@
             const matchTable = getCanonicalTableValue(rawMatchTable);
             const previousConfig = uploadMatchConfigs[activeKey] || {};
             const currentRows = collectCanvasReturnFieldRows();
+            const previousRows = normalizeUploadReturnFieldItems(previousConfig.return_fields || []);
+            const returnRows = currentRows.length > 0 ? currentRows : previousRows;
             const sqlInput = document.getElementById('matchSqlImportText');
             const sqlText = (sqlInput?.value || '').trim() || previousConfig.sql_text || buildTemplateSqlDraft({
                 ...previousConfig,
                 match_table: matchTable,
                 target_filter: document.getElementById('matchCanvasTargetFilter')?.value?.trim() || '',
-                return_fields: currentRows,
+                return_fields: returnRows,
             });
             const matchField = getOuterTemplateMatchFieldSnapshot(previousConfig);
+            if (sqlText && returnRows.length === 0) {
+                throw new Error('字段映射为空，请先点击“解析并填充”或至少添加一个字段');
+            }
             return {
                 template_key: templateKey,
                 config: {
@@ -4242,7 +4268,7 @@
                     match_mode: previousConfig.match_mode || 'exact',
                     target_filter: document.getElementById('matchCanvasTargetFilter')?.value?.trim() || '',
                     sql_text: sqlText,
-                    return_fields: currentRows,
+                    return_fields: returnRows,
                 }
             };
         }
@@ -4254,6 +4280,7 @@
                 throw new Error('数据库加载中，请稍后重试');
             }
             const payload = collectCanvasTemplatePayload();
+            upsertUploadMatchConfigSnapshot(payload.template_key, payload.config);
             const response = await fetch('/api/upload_match_configs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -4268,7 +4295,16 @@
             if (!response.ok) {
                 throw new Error(data.error || '保存失败');
             }
+            const savedConfig = data.db_config?.[payload.template_key];
+            if (savedConfig) {
+                upsertUploadMatchConfigSnapshot(payload.template_key, savedConfig);
+            }
             await loadUploadTemplates();
+            const reloadedRows = normalizeUploadReturnFieldItems(uploadMatchConfigs[payload.template_key]?.return_fields || []);
+            const payloadRows = normalizeUploadReturnFieldItems(payload.config.return_fields || []);
+            if (payloadRows.length > 0 && reloadedRows.length === 0) {
+                upsertUploadMatchConfigSnapshot(payload.template_key, savedConfig || payload.config);
+            }
             const templateSelect = document.getElementById('uploadTemplateSelect');
             if (templateSelect) {
                 templateSelect.value = payload.template_key;
@@ -4652,7 +4688,7 @@
                                     <div>操作</div>
                                 </div>
                                 ${editRows.map((row, index) => `
-                                    <div class="match-field-table-row match-canvas-field-row" data-row-index="${index}">
+                                    <div class="match-field-table-row match-canvas-field-row" data-row-index="${index}" data-db-field="${escapeAttr(row.db_field || '')}" data-business-field="${escapeAttr(row.business_field || '')}">
                                         <div class="match-field-row-index">${index + 1}</div>
                                         <div>
                                             <select class="match-canvas-input match-canvas-db-field">
@@ -4723,9 +4759,17 @@
                     select.addEventListener('change', () => {
                         const row = select.closest('.match-canvas-field-row');
                         const businessInput = row?.querySelector('.match-canvas-business-field');
+                        if (row) row.dataset.dbField = select.value.trim();
                         if (businessInput && !businessInput.value.trim()) {
                             businessInput.value = select.value;
+                            if (row) row.dataset.businessField = businessInput.value.trim();
                         }
+                    });
+                });
+                wrap.querySelectorAll('.match-canvas-business-field').forEach(input => {
+                    input.addEventListener('input', () => {
+                        const row = input.closest('.match-canvas-field-row');
+                        if (row) row.dataset.businessField = input.value.trim();
                     });
                 });
                 document.getElementById('matchCanvasSqlImportBtn')?.addEventListener('click', () => {
@@ -4753,6 +4797,7 @@
                         const currentFilterInput = document.getElementById('matchCanvasTargetFilter');
                         if (currentTableInput && parsed.match_table) currentTableInput.value = parsed.match_table;
                         if (currentFilterInput) currentFilterInput.value = parsed.target_filter;
+                        upsertUploadMatchConfigSnapshot(getActiveTemplateKey(), nextConfig);
                         renderMatchFieldBranches(nextConfig);
                         const nextPanel = document.getElementById('matchSqlImportPanel');
                         const nextText = document.getElementById('matchSqlImportText');

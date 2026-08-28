@@ -1398,6 +1398,15 @@ def _merge_upload_template_config(
     merged['sql_text'] = str(merged.get('sql_text') or '').strip()
     merged['description'] = str(merged.get('description') or '').strip()
     merged['keyword_column'] = str(merged.get('keyword_column') or '').strip()
+    incoming_has_return_fields = isinstance(incoming_config, dict) and 'return_fields' in incoming_config
+    incoming_return_fields = _normalize_return_field_specs(
+        incoming_config.get('return_fields') if incoming_has_return_fields else None
+    )
+    existing_return_fields = _normalize_return_field_specs(existing_config.get('return_fields'))
+    if incoming_has_return_fields:
+        merged['return_fields'] = incoming_return_fields or existing_return_fields
+    else:
+        merged['return_fields'] = existing_return_fields
 
     now = _format_upload_template_timestamp()
     merged['created_by'] = str(existing_config.get('created_by') or merged.get('created_by') or actor).strip() or 'system'
@@ -2085,6 +2094,11 @@ def upload_match_configs_api():
         duplicate_keys = _detect_duplicate_upload_template_label(db_config, template_key, config.get('label', ''))
 
         config['target_filter'] = _validate_target_filter(config.get('target_filter', ''))
+        if str(config.get('sql_text') or '').strip() and not config.get('return_fields'):
+            return jsonify({
+                'status': 'error',
+                'error': '字段映射为空，请先解析并填充字段后再保存',
+            }), 400
 
         knowledge_sync = _persist_upload_template_to_knowledge(db_name, template_key, config)
         if not knowledge_sync.get('ok'):
