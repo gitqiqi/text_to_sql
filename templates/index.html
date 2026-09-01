@@ -3095,6 +3095,59 @@
             padding: 20px 0;
             font-size: 12px;
         }
+        .query-history-filters,
+        .match-history-filters {
+            display: grid;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .query-history-filter-row,
+        .match-history-filter-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 48px 48px;
+            gap: 6px;
+            align-items: center;
+        }
+        .history-filter-input,
+        .match-history-filter-input {
+            width: 100%;
+            min-width: 0;
+            height: 32px;
+            font-size: 11px;
+            padding: 5px 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: #fff;
+            color: #111827;
+            box-sizing: border-box;
+        }
+        .history-filter-input:focus,
+        .match-history-filter-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.12);
+        }
+        .history-filter-btn,
+        .match-history-filter-btn {
+            height: 32px;
+            padding: 5px 0;
+            font-size: 11px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .history-filter-btn.primary,
+        .match-history-filter-btn.primary {
+            background: #667eea;
+            color: white;
+        }
+        .history-filter-btn.secondary,
+        .match-history-filter-btn.secondary {
+            background: #f3f4f6;
+            color: #4b5563;
+            border: 1px solid #d1d5db;
+        }
 
         @media (max-width: 1180px) {
             .match-workspace-body {
@@ -3162,20 +3215,35 @@
                         </div>
                         <div class="tool-section-body" id="sectionUnifiedHistory">
                             <div id="sqlHistoryContent" class="hidden">
-                                <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-                                    <input type="text" id="historyDateRange" class="tool-input" style="flex:1; font-size:11px; padding:4px 6px;" placeholder="选择日期范围" readonly>
-                                    <select id="historyModeFilter" class="tool-input" style="font-size:11px; padding:4px 6px; border:1px solid #ddd; border-radius:4px;">
-                                        <option value="">全部</option>
-                                        <option value="manual_sql">手动</option>
-                                        <option value="nl_query">AI</option>
-                                    </select>
-                                    <button id="historyFilterBtn" style="padding:4px 8px; font-size:11px; background:#667eea; color:white; border:none; border-radius:4px; cursor:pointer; white-space:nowrap;">筛选</button>
+                                <div class="query-history-filters">
+                                    <input type="text" id="historyDateRange" class="history-filter-input" placeholder="选择日期范围" readonly>
+                                    <div class="query-history-filter-row">
+                                        <select id="historyModeFilter" class="history-filter-input">
+                                            <option value="">全部类型</option>
+                                            <option value="manual_sql">手动</option>
+                                            <option value="nl_query">AI</option>
+                                        </select>
+                                        <button type="button" id="historyFilterBtn" class="history-filter-btn primary">筛选</button>
+                                        <button type="button" id="historyResetBtn" class="history-filter-btn secondary">重置</button>
+                                    </div>
                                 </div>
                                 <div id="historyList" style="max-height: 260px; overflow-y: auto; font-size: 12px;">
                                     <div style="color: #999; text-align: center; padding: 20px 0;">加载中...</div>
                                 </div>
                             </div>
                             <div id="matchHistoryContent">
+                                <div class="match-history-filters">
+                                    <input type="text" id="matchHistoryDateRange" class="match-history-filter-input" placeholder="选择日期范围" readonly>
+                                    <div class="match-history-filter-row">
+                                        <select id="matchHistoryTypeFilter" class="match-history-filter-input">
+                                            <option value="">全部类型</option>
+                                            <option value="template">模板匹配</option>
+                                            <option value="ai">AI 智能匹配</option>
+                                        </select>
+                                        <button type="button" id="matchHistoryFilterBtn" class="match-history-filter-btn primary">筛选</button>
+                                        <button type="button" id="matchHistoryResetBtn" class="match-history-filter-btn secondary">重置</button>
+                                    </div>
+                                </div>
                                 <div id="uploadHistoryList" class="upload-history-list">
                                     <div class="history-empty">暂无匹配历史</div>
                                 </div>
@@ -3297,6 +3365,7 @@
                             </div>
                         </div>
                         <div class="match-workflow-canvas hidden">
+                            <div id="matchConfigStatus" class="upload-status"></div>
                             <div class="match-field-branches" id="matchWorkspaceFieldBranches">
                                 <div class="match-field-row">
                                     <div class="match-field-connector"></div>
@@ -3738,6 +3807,8 @@
         let uploadHistoryTables = [];
         let uploadMatchHistoryRecords = [];
         let uploadMatchConfigs = {};
+        let queryHistoryDatePicker = null;
+        let matchHistoryDatePicker = null;
         let activeMainView = 'match';
         let uploadCanvasEditMode = false;
         let matchTemplateListMode = false;
@@ -4241,6 +4312,9 @@
             }
             const rawMatchTable = document.getElementById('matchCanvasMatchTable')?.value?.trim() || '';
             const matchTable = getCanonicalTableValue(rawMatchTable);
+            if (!matchTable) {
+                throw new Error('请先选择或填写目标表');
+            }
             const previousConfig = uploadMatchConfigs[activeKey] || {};
             const currentRows = collectCanvasReturnFieldRows();
             const previousRows = normalizeUploadReturnFieldItems(previousConfig.return_fields || []);
@@ -4253,7 +4327,7 @@
                 return_fields: returnRows,
             });
             const matchField = getOuterTemplateMatchFieldSnapshot(previousConfig);
-            if (sqlText && returnRows.length === 0) {
+            if (returnRows.length === 0) {
                 throw new Error('字段映射为空，请先点击“解析并填充”或至少添加一个字段');
             }
             return {
@@ -4275,12 +4349,12 @@
 
         async function saveCanvasTemplateConfig() {
             const db = getActiveDbName();
-            const status = document.getElementById('uploadStatus');
             if (!db) {
                 throw new Error('数据库加载中，请稍后重试');
             }
             const payload = collectCanvasTemplatePayload();
             upsertUploadMatchConfigSnapshot(payload.template_key, payload.config);
+            setMatchConfigStatus('loading', '正在保存配置...');
             const response = await fetch('/api/upload_match_configs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -4310,13 +4384,10 @@
                 templateSelect.value = payload.template_key;
             }
             canvasEditingTemplateKey = payload.template_key;
-            if (status) {
-                status.className = 'upload-status success';
-                const duplicateNote = Array.isArray(data.duplicate_keys) && data.duplicate_keys.length > 0
-                    ? `（同名模板：${data.duplicate_keys.join('、')}）`
-                    : '';
-                status.textContent = `✅ 已保存模板：${payload.config.label || payload.template_key}${duplicateNote}`;
-            }
+            const duplicateNote = Array.isArray(data.duplicate_keys) && data.duplicate_keys.length > 0
+                ? `（同名模板：${data.duplicate_keys.join('、')}）`
+                : '';
+            setMatchConfigStatus('success', `✅ 已保存模板：${payload.config.label || payload.template_key}${duplicateNote}`);
             setCanvasEditMode(true, payload.template_key);
         }
 
@@ -4996,6 +5067,18 @@
             });
         }
 
+        function setMatchConfigStatus(className, message) {
+            ['matchConfigStatus', 'uploadStatus'].forEach(id => {
+                const element = document.getElementById(id);
+                if (!element) return;
+                element.className = `upload-status ${className || ''}`.trim();
+                element.textContent = message || '';
+            });
+            if (message) {
+                document.getElementById('matchConfigStatus')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+        }
+
         function openUploadNewTableModal() {
             const modal = document.getElementById('uploadNewTableModal');
             modal?.classList.remove('hidden');
@@ -5059,16 +5142,19 @@
         document.getElementById('matchWorkspaceRunBtn').addEventListener('click', async () => {
             switchMainView('match');
             if (uploadCanvasEditMode) {
+                const runBtn = document.getElementById('matchWorkspaceRunBtn');
+                if (runBtn) runBtn.disabled = true;
                 try {
                     await saveCanvasTemplateConfig();
                 } catch (error) {
-                    const status = document.getElementById('uploadStatus');
-                    if (status) {
-                        status.className = 'upload-status error';
-                        status.textContent = '❌ ' + error.message;
+                    const message = '❌ ' + (error.message || '保存配置失败');
+                    if (document.getElementById('matchConfigStatus') || document.getElementById('uploadStatus')) {
+                        setMatchConfigStatus('error', message);
                     } else {
-                        alert(error.message);
+                        alert(message);
                     }
+                } finally {
+                    if (runBtn) runBtn.disabled = false;
                 }
             } else {
                 await matchUploadedTable();
@@ -5526,13 +5612,33 @@
             });
 
             // 历史记录日期范围选择器
-            flatpickr(document.getElementById('historyDateRange'), {
-                mode: 'range',
-                locale: 'zh',
-                dateFormat: 'Y-m-d',
-                defaultDate: [new Date(Date.now() - 7 * 86400000), new Date()],
-                onChange: function() { loadQueryHistory(); }
-            });
+            const historyDateRange = document.getElementById('historyDateRange');
+            if (historyDateRange) {
+                queryHistoryDatePicker = flatpickr(historyDateRange, {
+                    mode: 'range',
+                    locale: 'zh',
+                    dateFormat: 'Y-m-d',
+                    defaultDate: [new Date(Date.now() - 7 * 86400000), new Date()],
+                    onChange: function(selectedDates) {
+                        if (selectedDates.length !== 1) {
+                            loadQueryHistory();
+                        }
+                    }
+                });
+            }
+            const matchHistoryDateRange = document.getElementById('matchHistoryDateRange');
+            if (matchHistoryDateRange) {
+                matchHistoryDatePicker = flatpickr(matchHistoryDateRange, {
+                    mode: 'range',
+                    locale: 'zh',
+                    dateFormat: 'Y-m-d',
+                    onChange: function(selectedDates) {
+                        if (selectedDates.length !== 1) {
+                            loadUploadMatchHistory();
+                        }
+                    }
+                });
+            }
 
             await loadDatabases();
             document.querySelector('[data-strategy="vector"]').classList.add('selected');
@@ -6317,6 +6423,35 @@
             return String(value).slice(0, 19).replace('T', ' ');
         }
 
+        function parseDateRangeFilter(value = '') {
+            const rangeVal = String(value || '').trim();
+            if (!rangeVal) return { startDate: '', endDate: '' };
+            const parts = rangeVal.split(' 至 ');
+            return {
+                startDate: (parts[0] || '').trim(),
+                endDate: (parts[1] || '').trim(),
+            };
+        }
+
+        function getMatchHistoryFilters() {
+            const { startDate, endDate } = parseDateRangeFilter(document.getElementById('matchHistoryDateRange')?.value || '');
+            const workflowMode = document.getElementById('matchHistoryTypeFilter')?.value || '';
+            return {
+                startDate,
+                endDate,
+                workflowMode,
+            };
+        }
+
+        function hasMatchHistoryFilters() {
+            const filters = getMatchHistoryFilters();
+            return Boolean(filters.startDate || filters.endDate || filters.workflowMode);
+        }
+
+        function formatUploadMatchWorkflowMode(value = '') {
+            return String(value || '').trim().toLowerCase() === 'ai' ? 'AI 智能匹配' : '模板匹配';
+        }
+
         function ensureSelectOption(select, value, label = value) {
             if (!select || !value) return;
             const exists = Array.from(select.options || []).some(option => option.value === value);
@@ -6337,18 +6472,20 @@
             if (!historyList) return;
 
             if (!Array.isArray(items) || items.length === 0) {
-                historyList.innerHTML = '<div class="history-empty">暂无匹配历史</div>';
+                const emptyText = hasMatchHistoryFilters() ? '暂无符合筛选的匹配历史' : '暂无匹配历史';
+                historyList.innerHTML = `<div class="history-empty">${emptyText}</div>`;
                 return;
             }
 
             historyList.innerHTML = items.map((item, index) => {
                 const sourceLabel = item.source_table_label || item.source_table_name || '目标表';
                 const templateLabel = item.template_label || item.template_key || '业务模板';
+                const workflowLabel = formatUploadMatchWorkflowMode(item.workflow_mode);
                 const matchedTable = item.matched_table_name || '';
                 const activeClass = matchedTable && matchedTable === activeMatchedTable ? ' active' : '';
                 const matchedRows = item.matched_rows == null ? '' : `匹配到 ${item.matched_rows} 条`;
                 const ts = formatMatchHistoryTime(item.created_at);
-                const meta = [ts, matchedRows].filter(Boolean).join(' · ');
+                const meta = [ts, workflowLabel, matchedRows].filter(Boolean).join(' · ');
                 const title = `${sourceLabel} - ${templateLabel}`;
                 return `
                     <button type="button"
@@ -6418,7 +6555,15 @@
 
             historyList.innerHTML = '<div class="history-loading">加载中...</div>';
             try {
-                const response = await fetch(`/api/upload_match_history?db_name=${encodeURIComponent(dbName)}&limit=30`);
+                const filters = getMatchHistoryFilters();
+                const params = new URLSearchParams({
+                    db_name: dbName,
+                    limit: '50',
+                });
+                if (filters.startDate) params.set('start_time', filters.startDate);
+                if (filters.endDate) params.set('end_time', filters.endDate);
+                if (filters.workflowMode) params.set('workflow_mode', filters.workflowMode);
+                const response = await fetch(`/api/upload_match_history?${params.toString()}`);
                 const data = await response.json();
                 if (!response.ok) {
                     throw new Error(data.error || '加载匹配历史失败');
@@ -6611,6 +6756,7 @@
                     return_fields: collectUploadConfigFieldRows(),
                     match_mode: (matchModeSelect?.value || 'exact').trim(),
                     target_filter: existingConfig.target_filter || '',
+                    sql_text: existingConfig.sql_text || '',
                 }
             };
         }
@@ -6796,12 +6942,62 @@
         }
 
         document.getElementById('historyFilterBtn').addEventListener('click', loadQueryHistory);
+        document.getElementById('historyModeFilter')?.addEventListener('change', loadQueryHistory);
+        document.getElementById('historyResetBtn')?.addEventListener('click', () => {
+            queryHistoryDatePicker?.clear();
+            const modeFilter = document.getElementById('historyModeFilter');
+            if (modeFilter) modeFilter.value = '';
+            loadQueryHistory();
+        });
+        document.getElementById('matchHistoryFilterBtn')?.addEventListener('click', () => loadUploadMatchHistory());
+        document.getElementById('matchHistoryTypeFilter')?.addEventListener('change', () => loadUploadMatchHistory());
+        document.getElementById('matchHistoryResetBtn')?.addEventListener('click', () => {
+            matchHistoryDatePicker?.clear();
+            const typeFilter = document.getElementById('matchHistoryTypeFilter');
+            if (typeFilter) typeFilter.value = '';
+            loadUploadMatchHistory();
+        });
 
         let currentSqlAbortController = null;
         let currentSqlRequestId = null;
 
+        function getTextareaSelectionValue(textarea) {
+            if (!textarea || textarea.selectionStart == null || textarea.selectionEnd == null) {
+                return '';
+            }
+            if (textarea.selectionStart === textarea.selectionEnd) {
+                return '';
+            }
+            return textarea.value.slice(textarea.selectionStart, textarea.selectionEnd).trim();
+        }
+
+        function getSqlExecutionInput() {
+            const textarea = document.getElementById('sqlQuery');
+            const fullSql = sqlEditor ? sqlEditor.getValue().trim() : (textarea?.value || '').trim();
+            let selectedSql = '';
+
+            if (sqlEditor) {
+                const selections = typeof sqlEditor.getSelections === 'function'
+                    ? sqlEditor.getSelections()
+                    : [sqlEditor.getSelection()];
+                selectedSql = selections
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+                    .join('\n');
+            } else {
+                selectedSql = getTextareaSelectionValue(textarea);
+            }
+
+            return {
+                sql: selectedSql || fullSql,
+                isSelection: Boolean(selectedSql),
+                fullSql,
+            };
+        }
+
         document.getElementById('executeSqlBtn').addEventListener('click', async () => {
-            const sql = sqlEditor ? sqlEditor.getValue().trim() : document.getElementById('sqlQuery').value.trim();
+            const executionInput = getSqlExecutionInput();
+            const sql = executionInput.sql;
             const db = getActiveDbName();
             const loading = document.getElementById('sqlLoadingIndicator');
             const cancelBtn = document.getElementById('cancelSqlBtn');
@@ -6816,6 +7012,7 @@
             currentSqlRequestId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random())).replace(/-/g, '');
             currentSqlAbortController = new AbortController();
 
+            loading.textContent = executionInput.isSelection ? '正在执行选中 SQL' : '正在执行 SQL';
             loading.style.display = 'block';
             cancelBtn.style.display = 'inline-block';
             executeBtn.disabled = true;
@@ -6843,7 +7040,7 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    resultSummary.textContent = `来源：直接 SQL 查询（${db}）`;
+                    resultSummary.textContent = `来源：直接 SQL 查询（${executionInput.isSelection ? '选中片段，' : ''}${db}）`;
                     resultSummary.style.display = 'block';
                     if (data.sql_result && data.sql_result.length > 0) {
                         const columns = data.columns && data.columns.length > 0

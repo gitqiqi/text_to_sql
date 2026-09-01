@@ -313,6 +313,36 @@ def _render_return_field_expression(source_expr: str, target_columns: list[str] 
     return _rewrite_target_column_qualifiers(expr, target_columns)
 
 
+def _normalize_template_select_sql(sql_text: str) -> str:
+    sql = clean_sql(sql_text)
+    if not sql:
+        return ''
+
+    sql = sql.strip()
+    while sql.endswith(';'):
+        sql = sql[:-1].strip()
+    if ';' in sql:
+        raise ValueError('模板 SQL 只支持单条 SELECT/WITH 查询')
+    if not re.match(r'^(select|with)\b', sql, flags=re.IGNORECASE):
+        raise ValueError('模板 SQL 只支持 SELECT/WITH 查询')
+    validate_sql_safety(sql)
+    return sql
+
+
+def _render_template_query_field_expression(spec: dict) -> str:
+    field_name = str(spec.get('business_field') or spec.get('db_field') or '').strip()
+    if not field_name:
+        return ''
+    return f't.{_quote_ident(field_name)}'
+
+
+def _format_match_error(error: Exception) -> str:
+    message = str(getattr(error, 'orig', None) or error).strip()
+    if '[SQL:' in message:
+        message = message.split('[SQL:', 1)[0].strip()
+    return message or '匹配失败'
+
+
 def _build_return_field_lookup(return_field_specs: list[dict]) -> dict[str, dict]:
     lookup = {}
     for spec in return_field_specs or []:
@@ -417,6 +447,7 @@ def _build_match_target_select_specs(
     match_field_specs,
     return_field_specs: list[dict],
     target_columns: list[str] | None = None,
+    use_template_query: bool = False,
 ) -> tuple[list[dict], list[dict], dict[int, str]]:
     if isinstance(match_field_specs, dict):
         raw_match_specs = [match_field_specs]
@@ -447,7 +478,11 @@ def _build_match_target_select_specs(
         if alias_key in seen_aliases:
             return
 
-        expr = _render_return_field_expression(db_field, target_columns)
+        expr = (
+            _render_template_query_field_expression({'db_field': db_field, 'business_field': business_field})
+            if use_template_query
+            else _render_return_field_expression(db_field, target_columns)
+        )
         if not expr:
             expr = 'NULL'
 
@@ -872,6 +907,8 @@ def _resolve_upload_match_plan(
     configured_match_mode = str(upload_match_config.get('match_mode', '') or '').strip().lower()
     configured_return_fields = upload_match_config.get('return_fields') if 'return_fields' in upload_match_config else None
     configured_target_filter = str(upload_match_config.get('target_filter', '') or '').strip()
+    configured_sql_text = str(upload_match_config.get('sql_text', '') or '').strip()
+    target_sql_text = _normalize_template_select_sql(configured_sql_text) if use_template_mode and configured_sql_text else ''
 
     target_table_meta = None
     if use_template_mode and configured_match_table:
@@ -1039,6 +1076,7 @@ def _resolve_upload_match_plan(
         ],
         'match_mode': match_mode,
         'configured_target_filter': configured_target_filter,
+        'target_sql_text': target_sql_text,
         'return_field_specs': return_field_specs,
     }
 
@@ -1055,6 +1093,7 @@ def _execute_match_query(
     target_filter: str = '',
     source_columns: list[str] | None = None,
     match_field_pairs: list[dict] | None = None,
+    target_sql_text: str = '',
 ) -> dict:
     engine = DatabasePoolManager.get_engine(db_name)
     matched_table_sql = _quote_ident(matched_table_name)
@@ -1068,6 +1107,7 @@ def _execute_match_query(
         target_filter,
         source_columns,
         match_field_pairs,
+        target_sql_text,
     )
     result_query = _build_match_result_sql(matched_table_name, matched_only=True)
 
@@ -1102,8 +1142,11 @@ def _build_match_sql(
     target_filter: str = '',
     source_columns: list[str] | None = None,
     match_field_pairs: list[dict] | None = None,
+    target_sql_text: str = '',
 ) -> str:
     target_columns = target_table_meta.get('columns') or []
+    template_query_sql = _normalize_template_select_sql(target_sql_text) if target_sql_text else ''
+    use_template_query = bool(template_query_sql)
     normalized_pairs = []
     for pair in match_field_pairs or []:
         if not isinstance(pair, dict):
@@ -1126,6 +1169,7 @@ def _build_match_sql(
         [pair['match_field_spec'] for pair in normalized_pairs],
         return_field_specs,
         target_columns,
+        use_template_query=use_template_query,
     )
     if not match_specs or not normalized_pairs:
         raise ValueError('匹配字段不在目标表字段或返回字段映射中')
@@ -1152,7 +1196,7 @@ def _build_match_sql(
     if not resolved_select_specs:
         raise ValueError('未能生成可用的匹配字段')
 
-    target_sql = _quote_table_name(target_table_meta)
+    target_sql = f'({template_query_sql})' if use_template_query else _quote_table_name(target_table_meta)
     source_sql = f'tmp.{_quote_ident(source_table_name)}'
     join_parts = []
     for index, pair in enumerate(normalized_pairs):
@@ -1176,7 +1220,7 @@ def _build_match_sql(
 
     join_clause = ' AND '.join(join_parts)
 
-    validated_filter = _validate_target_filter(target_filter)
+    validated_filter = '' if use_template_query else _validate_target_filter(target_filter)
     if validated_filter:
         validated_filter = _rewrite_target_column_qualifiers(
             validated_filter,
@@ -1385,17 +1429,20 @@ def _merge_upload_template_config(
     merged = dict(existing_config)
     merged.update(incoming_config or {})
 
+    def merged_text(field: str, default: str = '') -> str:
+        incoming_value = str((incoming_config or {}).get(field) or '').strip()
+        existing_value = str(existing_config.get(field) or '').strip()
+        return incoming_value or existing_value or default
+
     label = str(merged.get('label') or merged.get('name') or template_key or '').strip()
     merged['label'] = label or template_key
     merged['name'] = merged.get('name') or merged['label']
-    merged['match_table'] = str(merged.get('match_table') or '').strip()
-    merged['match_field'] = str(merged.get('match_field') or '').strip()
-    merged['match_field_display'] = str(
-        merged.get('match_field_display') or merged.get('match_field') or ''
-    ).strip()
-    merged['match_mode'] = str(merged.get('match_mode') or 'exact').strip() or 'exact'
-    merged['target_filter'] = str(merged.get('target_filter') or '').strip()
-    merged['sql_text'] = str(merged.get('sql_text') or '').strip()
+    merged['match_table'] = merged_text('match_table')
+    merged['match_field'] = merged_text('match_field')
+    merged['match_field_display'] = merged_text('match_field_display', merged['match_field'])
+    merged['match_mode'] = merged_text('match_mode', 'exact') or 'exact'
+    merged['target_filter'] = merged_text('target_filter')
+    merged['sql_text'] = merged_text('sql_text')
     merged['description'] = str(merged.get('description') or '').strip()
     merged['keyword_column'] = str(merged.get('keyword_column') or '').strip()
     incoming_has_return_fields = isinstance(incoming_config, dict) and 'return_fields' in incoming_config
@@ -1522,7 +1569,7 @@ def get_databases():
         databases = get_available_databases()
         return jsonify({'databases': databases, 'status': 'success'})
     except Exception as e:
-        return jsonify({'error': str(e), 'status': 'error'}), 500
+        return jsonify({'error': _format_match_error(e), 'status': 'error'}), 500
 
 
 @main_bp.route('/api/db_tables', methods=['GET'])
@@ -1881,6 +1928,18 @@ def upload_match_history():
     except Exception:
         limit = 30
     limit = max(1, min(limit, 100))
+    start_filter = request.args.get('start_time', '').strip()
+    end_filter = request.args.get('end_time', '').strip()
+    workflow_mode_filter = request.args.get('workflow_mode', '').strip().lower()
+    if workflow_mode_filter and workflow_mode_filter not in {'template', 'ai'}:
+        return jsonify({'error': 'invalid workflow_mode', 'status': 'error'}), 400
+    for filter_name, filter_value in (('start_time', start_filter), ('end_time', end_filter)):
+        if not filter_value:
+            continue
+        try:
+            datetime.strptime(filter_value, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': f'invalid {filter_name}', 'status': 'error'}), 400
     current_user_data = get_current_user()
     if not current_user_data:
         return jsonify({'error': '请先登录', 'status': 'unauthorized'}), 401
@@ -1895,6 +1954,32 @@ def upload_match_history():
         if not user_can_view_all(current_user_data):
             where_clauses.append('admin_id = :current_admin_id')
             params['current_admin_id'] = current_user_data.get('admin_id')
+        if start_filter:
+            where_clauses.append('created_at >= :start_time')
+            params['start_time'] = start_filter
+        if end_filter:
+            end_dt = datetime.strptime(end_filter, '%Y-%m-%d') + timedelta(days=1)
+            where_clauses.append('created_at < :end_time_plus')
+            params['end_time_plus'] = end_dt.strftime('%Y-%m-%d')
+        if workflow_mode_filter == 'ai':
+            where_clauses.append(
+                "(matched_tables LIKE :workflow_mode_ai_spaced OR matched_tables LIKE :workflow_mode_ai_compact)"
+            )
+            params['workflow_mode_ai_spaced'] = '%"workflow_mode": "ai"%'
+            params['workflow_mode_ai_compact'] = '%"workflow_mode":"ai"%'
+        elif workflow_mode_filter == 'template':
+            where_clauses.append(
+                "("
+                "matched_tables LIKE :workflow_mode_template_spaced "
+                "OR matched_tables LIKE :workflow_mode_template_compact "
+                "OR (COALESCE(matched_tables, '') NOT LIKE :workflow_mode_ai_spaced "
+                "AND COALESCE(matched_tables, '') NOT LIKE :workflow_mode_ai_compact)"
+                ")"
+            )
+            params['workflow_mode_template_spaced'] = '%"workflow_mode": "template"%'
+            params['workflow_mode_template_compact'] = '%"workflow_mode":"template"%'
+            params['workflow_mode_ai_spaced'] = '%"workflow_mode": "ai"%'
+            params['workflow_mode_ai_compact'] = '%"workflow_mode":"ai"%'
         where_sql = ' AND '.join(where_clauses)
 
         with engine.connect() as conn:
@@ -1913,6 +1998,11 @@ def upload_match_history():
         for row in rows:
             mapping = row._mapping
             payload = _parse_match_history_payload(mapping.get('matched_tables'))
+            workflow_mode = str(payload.get('workflow_mode') or 'template').strip().lower()
+            if workflow_mode not in {'template', 'ai'}:
+                workflow_mode = 'template'
+            if workflow_mode_filter and workflow_mode != workflow_mode_filter:
+                continue
             matched_rows = payload.get('matched_rows')
             if matched_rows is None:
                 matched_rows = mapping.get('result_rows')
@@ -1931,7 +2021,7 @@ def upload_match_history():
                 'keyword_column': payload.get('keyword_column') or '',
                 'match_field': payload.get('match_field') or '',
                 'field_mappings': payload.get('field_mappings') or [],
-                'workflow_mode': payload.get('workflow_mode') or 'template',
+                'workflow_mode': workflow_mode,
                 'result_sql': payload.get('result_sql') or mapping.get('generated_sql') or '',
                 'execute_status': mapping.get('execute_status') or '',
                 'total_duration_ms': mapping.get('total_duration_ms'),
@@ -1944,7 +2034,15 @@ def upload_match_history():
                 'action_type': mapping.get('action_type'),
                 'visibility_scope': mapping.get('visibility_scope'),
             })
-        return jsonify({'status': 'success', 'history': history})
+        return jsonify({
+            'status': 'success',
+            'history': history,
+            'filters': {
+                'start_time': start_filter,
+                'end_time': end_filter,
+                'workflow_mode': workflow_mode_filter,
+            },
+        })
     except Exception as e:
         print(f"   ⚠️ 加载匹配历史失败（忽略，不影响主流程）: {e}")
         return jsonify({'status': 'success', 'history': []})
@@ -2094,7 +2192,12 @@ def upload_match_configs_api():
         duplicate_keys = _detect_duplicate_upload_template_label(db_config, template_key, config.get('label', ''))
 
         config['target_filter'] = _validate_target_filter(config.get('target_filter', ''))
-        if str(config.get('sql_text') or '').strip() and not config.get('return_fields'):
+        if not str(config.get('match_table') or '').strip():
+            return jsonify({
+                'status': 'error',
+                'error': '目标表为空，请先选择或填写目标表',
+            }), 400
+        if not config.get('return_fields'):
             return jsonify({
                 'status': 'error',
                 'error': '字段映射为空，请先解析并填充字段后再保存',
@@ -2245,6 +2348,7 @@ def match_uploaded_table():
             match_plan['configured_target_filter'] if use_template_mode else '',
             source_columns,
             match_plan['match_field_pairs'],
+            match_plan.get('target_sql_text', '') if use_template_mode else '',
         )
         total_duration_ms = (time.time() - start_time) * 1000
         matched_table_full_name = f'tmp.{matched_table_name}'
@@ -2634,6 +2738,7 @@ def upload_excel():
                 match_plan['configured_target_filter'] if use_template_mode else '',
                 list(df.columns),
                 match_plan['match_field_pairs'],
+                match_plan.get('target_sql_text', '') if use_template_mode else '',
             )
 
             response_payload.update({
@@ -2657,12 +2762,13 @@ def upload_excel():
             })
             return jsonify(response_payload)
         except Exception as match_error:
+            match_error_message = _format_match_error(match_error)
             response_payload.update({
                 'mode': 'upload',
                 'workflow_mode': workflow_mode,
                 'match_status': 'failed',
-                'match_error': str(match_error),
-                'message': f'✅ 成功导入 {row_count} 行数据到 {full_name}，但匹配失败：{match_error}'
+                'match_error': match_error_message,
+                'message': f'✅ 成功导入 {row_count} 行数据到 {full_name}，但匹配失败：{match_error_message}'
             })
             return jsonify(response_payload)
     except Exception as e:
