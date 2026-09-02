@@ -3095,21 +3095,18 @@
             padding: 20px 0;
             font-size: 12px;
         }
-        .query-history-filters,
-        .match-history-filters {
+        .history-filters {
             display: grid;
             gap: 6px;
             margin-bottom: 8px;
         }
-        .query-history-filter-row,
-        .match-history-filter-row {
+        .history-filter-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) 48px 48px;
             gap: 6px;
             align-items: center;
         }
-        .history-filter-input,
-        .match-history-filter-input {
+        .history-filter-input {
             width: 100%;
             min-width: 0;
             height: 32px;
@@ -3121,14 +3118,12 @@
             color: #111827;
             box-sizing: border-box;
         }
-        .history-filter-input:focus,
-        .match-history-filter-input:focus {
+        .history-filter-input:focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.12);
         }
-        .history-filter-btn,
-        .match-history-filter-btn {
+        .history-filter-btn {
             height: 32px;
             padding: 5px 0;
             font-size: 11px;
@@ -3137,13 +3132,11 @@
             cursor: pointer;
             white-space: nowrap;
         }
-        .history-filter-btn.primary,
-        .match-history-filter-btn.primary {
+        .history-filter-btn.primary {
             background: #667eea;
             color: white;
         }
-        .history-filter-btn.secondary,
-        .match-history-filter-btn.secondary {
+        .history-filter-btn.secondary {
             background: #f3f4f6;
             color: #4b5563;
             border: 1px solid #d1d5db;
@@ -3215,9 +3208,9 @@
                         </div>
                         <div class="tool-section-body" id="sectionUnifiedHistory">
                             <div id="sqlHistoryContent" class="hidden">
-                                <div class="query-history-filters">
+                                <div class="history-filters">
                                     <input type="text" id="historyDateRange" class="history-filter-input" placeholder="选择日期范围" readonly>
-                                    <div class="query-history-filter-row">
+                                    <div class="history-filter-row">
                                         <select id="historyModeFilter" class="history-filter-input">
                                             <option value="">全部类型</option>
                                             <option value="manual_sql">手动</option>
@@ -3232,16 +3225,16 @@
                                 </div>
                             </div>
                             <div id="matchHistoryContent">
-                                <div class="match-history-filters">
-                                    <input type="text" id="matchHistoryDateRange" class="match-history-filter-input" placeholder="选择日期范围" readonly>
-                                    <div class="match-history-filter-row">
-                                        <select id="matchHistoryTypeFilter" class="match-history-filter-input">
+                                <div class="history-filters">
+                                    <input type="text" id="matchHistoryDateRange" class="history-filter-input" placeholder="选择日期范围" readonly>
+                                    <div class="history-filter-row">
+                                        <select id="matchHistoryTypeFilter" class="history-filter-input">
                                             <option value="">全部类型</option>
                                             <option value="template">模板匹配</option>
                                             <option value="ai">AI 智能匹配</option>
                                         </select>
-                                        <button type="button" id="matchHistoryFilterBtn" class="match-history-filter-btn primary">筛选</button>
-                                        <button type="button" id="matchHistoryResetBtn" class="match-history-filter-btn secondary">重置</button>
+                                        <button type="button" id="matchHistoryFilterBtn" class="history-filter-btn primary">筛选</button>
+                                        <button type="button" id="matchHistoryResetBtn" class="history-filter-btn secondary">重置</button>
                                     </div>
                                 </div>
                                 <div id="uploadHistoryList" class="upload-history-list">
@@ -3587,134 +3580,6 @@
                     <div id="sharedResultError" class="result-box error-box" style="display: none;"></div>
                 </div>
             </div>
-
-            <template id="legacyAiSidebarTemplate">
-                <div class="sidebar-header">
-                    <h2>✨ AI SQL <span class="badge">智能生成</span></h2>
-                    <button class="close-sidebar" id="closeSidebar">✕</button>
-                </div>
-                <div class="sidebar-content">
-                    <p style="color: #666; margin-bottom: 16px;">用自然语言提问，AI 会自动生成 SQL 并执行查询。</p>
-                    <textarea id="nlQuery" placeholder="请输入您的自然语言查询，例如：查询最近一个月销量最高的10本书"></textarea>
-
-                    <div style="margin: 12px 0; position: relative; z-index: 1;">
-                        <label style="font-weight: 600; color: #333; display: block; margin-bottom: 6px; font-size: 13px;">🏷️ Schema 过滤</label>
-                        <div class="multi-select-container" id="schemaMultiSelect">
-                            <div class="multi-select-display" id="schemaDisplay">
-                                <span class="multi-select-placeholder">全部 Schema</span>
-                            </div>
-                            <div class="multi-select-dropdown" id="schemaDropdown"></div>
-                        </div>
-                    </div>
-
-                    <div style="margin: 16px 0;">
-                        <label style="font-weight: 600; color: #333; display: block; margin-bottom: 12px;">🔍 检索策略</label>
-
-                        <div class="strategy-group">
-                            <div class="strategy-option" data-strategy="vector">
-                                <input type="radio" name="searchStrategy" id="strategyVector" value="vector" checked>
-                                <div class="strategy-content">
-                                    <div class="strategy-title">📊 向量检索</div>
-                                    <div class="strategy-desc">根据自然语言语义自动匹配最相关的表（推荐）</div>
-                                </div>
-                            </div>
-
-                            <div class="strategy-option" data-strategy="exact">
-                                <input type="radio" name="searchStrategy" id="strategyExact" value="exact">
-                                <div class="strategy-content">
-                                    <div class="strategy-title">🎯 指定表检索</div>
-                                    <div class="strategy-desc">手动选择或搜索表名，只使用单个表的schema</div>
-                                </div>
-                            </div>
-
-                            <div class="strategy-option" data-strategy="full">
-                                <input type="radio" name="searchStrategy" id="strategyFull" value="full">
-                                <div class="strategy-content">
-                                    <div class="strategy-title">🌐 全量检索</div>
-                                    <div class="strategy-desc">不使用向量筛选，将所有表的schema完整传递给AI（表多时可能影响性能）</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div id="vectorConfig" class="config-group">
-                            <label>
-                                📊 返回相关表数量：
-                                <input type="number" id="topKTables" value="10" min="1" max="20" step="1" style="width: 70px;">
-                                <span class="info-badge">推荐3-5</span>
-                            </label>
-                        </div>
-
-                        <div id="exactTableConfig" style="display: none;">
-                            <label style="font-weight: 600; color: #333; display: block; margin-bottom: 8px;">📋 搜索并选择表</label>
-                            <div class="table-search-container">
-                                <input type="text" id="tableSearchInput" class="table-search-input" placeholder="输入表名进行模糊搜索，例如: user、order">
-                                <div id="tableSuggestions" class="table-suggestions"></div>
-                            </div>
-                            <div id="selectedTableInfo" class="selected-table-info">
-                                <span>✅ 已选择: <strong id="selectedTableName"></strong></span>
-                                <button type="button" id="clearTableBtn" class="clear-table-btn" title="清除选择">✕</button>
-                            </div>
-                            <div style="font-size: 12px; color: #666; margin-top: 8px;">
-                                <span>💡 提示：输入关键字会自动模糊匹配表名，点击选择即可</span>
-                            </div>
-                        </div>
-
-                        <div id="fullConfig" class="config-group" style="display: none;">
-                            <div style="font-size: 13px; color: #666;">
-                                ⚠️ 全量检索会将数据库所有表的schema传递给AI，表数量较多时可能影响响应速度。
-                            </div>
-                        </div>
-
-                        <details style="margin-top: 12px;">
-                            <summary style="cursor: pointer; color: #667eea; font-size: 13px;">⚙️ 高级选项</summary>
-                            <div class="config-group" style="margin-top: 8px;">
-                                <label style="display: block; font-weight: 600; color: #333; margin-bottom: 8px;">🧠 向量模型</label>
-                                <div style="display: flex; gap: 16px;">
-                                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                                        <input type="radio" name="embeddingProvider" id="embLocal" value="local" checked>
-                                        <span>本地模型</span>
-                                    </label>
-                                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                                        <input type="radio" name="embeddingProvider" id="embApi" value="api">
-                                        <span>豆包 API (doubao-embedding-vision-250615)</span>
-                                    </label>
-                                </div>
-                                <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                                    切换需要重新提交查询才能生效
-                                </div>
-                            </div>
-                            <div class="config-group" style="margin-top: 8px;">
-                                <label style="display: flex; align-items: center; gap: 8px;">
-                                    <input type="checkbox" id="fuzzyMatchCheckbox" checked>
-                                    <span>启用降级策略（指定表未找到时自动使用向量检索）</span>
-                                </label>
-                            </div>
-                            <div class="config-group" style="margin-top: 8px; border-top: 1px solid #eee; padding-top: 8px;">
-                                <button type="button" id="rebuildVectorsBtn" style="font-size: 12px; padding: 6px 14px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;">
-                                    🔄 手动更新向量数据库
-                                </button>
-                                <div style="font-size: 11px; color: #999; margin-top: 4px;">
-                                    每日凌晨 1:00 自动更新，必要时可手动触发
-                                </div>
-                                <div id="rebuildVectorsStatus" style="font-size: 11px; color: #667eea; margin-top: 2px;"></div>
-                            </div>
-                        </details>
-                    </div>
-
-                    <button id="submitBtn">🤖 AI 生成 SQL 并执行</button>
-                    <button id="cancelBtn" style="display: none; background-color: #d32f2f; color: white;">⛔ 停止查询</button>
-                    <div class="loading" id="aiLoadingIndicator">AI 正在思考</div>
-
-                    <div class="result-section">
-                        <h3>📄 生成的 SQL</h3>
-                        <div class="sql-box" id="generatedSQL">等待输入...</div>
-                    </div>
-
-                    <div style="border-top: 1px solid #f0f0f0; padding-top: 16px; margin-top: 16px;">
-                        <button id="legacyKbManagementBtn" style="width: 100%; padding: 10px 16px; background: #8b5cf6; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13px;">📚 知识库管理</button>
-                    </div>
-                </div>
-            </template>
 
             <div class="upload-config-modal hidden" id="uploadNewTableModal" role="dialog" aria-modal="true" aria-labelledby="uploadNewTableTitle">
                 <div class="upload-config-modal-mask" data-close-upload-modal></div>
@@ -4974,7 +4839,6 @@
         }
 
         function getSelectedSchema() {
-            // 兼容旧调用：返回逗号分隔字符串
             return getSelectedSchemas().join(',');
         }
 
@@ -5724,7 +5588,6 @@
                     allTables = schemas.length > 0
                         ? matchTargetTables.filter(table => schemas.includes(String(table.schema || '')))
                         : matchTargetTables.slice();
-                    console.log(`加载了 ${matchTargetTables.length} 个数据库表，AI SQL 当前使用 ${allTables.length} 个`);
                 } else {
                     allTables = [];
                     matchTargetTables = [];
@@ -7128,7 +6991,6 @@
         document.getElementById('cancelBtn').addEventListener('click', async () => {
             if (!currentQueryRequestId) return;
             const reqId = currentQueryRequestId;
-            console.log('用户点击停止，request_id:', reqId);
             // 1) 服务端：触发协作式取消（停止后续 LLM 批次/SQL 执行）
             try {
                 await fetch('/cancel_query', {
@@ -7210,7 +7072,6 @@
                     embedding_provider: embeddingProvider,
                 };
 
-                console.log('请求参数:', requestBody);
 
                 const response = await fetch('/execute_nl_query', {
                     method: 'POST',

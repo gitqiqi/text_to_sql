@@ -17,7 +17,6 @@ from werkzeug.utils import secure_filename
 from . import main_bp
 from config import (
     get_available_databases,
-    get_upload_match_configs,
     get_upload_match_templates,
     normalize_upload_template_label,
 )
@@ -37,8 +36,8 @@ from core.cancellation import registry as cancel_registry, CancelledError
 from core.db_manager import DatabasePoolManager
 from core.upload_match_template_repo import (
     delete_upload_match_template_record,
+    get_upload_match_config_from_db,
     load_upload_match_templates_config,
-    seed_upload_match_templates_from_config,
     update_upload_match_template_enabled,
     upsert_upload_match_template,
 )
@@ -896,7 +895,7 @@ def _resolve_upload_match_plan(
         match_field_input,
     )
     tables = KnowledgeBase(db_name).get_table_list()
-    upload_match_config = match_config if isinstance(match_config, dict) else _get_upload_match_config(
+    upload_match_config = match_config if isinstance(match_config, dict) else get_upload_match_config_from_db(
         db_name,
         template_key=template_key if use_template_mode else None,
         source_table_name=source_table_name if use_template_mode else None,
@@ -1307,93 +1306,6 @@ def _current_upload_template_actor(payload: dict | None = None) -> str:
         if value:
             return value
     return 'system'
-
-
-def _load_legacy_upload_match_config(db_name: str) -> dict:
-    legacy_config = get_upload_match_configs().get(db_name) or {}
-    return dict(legacy_config) if isinstance(legacy_config, dict) else {}
-
-
-def _load_upload_match_db_config(db_name: str, seed_from_legacy: bool = True) -> dict:
-    """业务模板以 knowledge.upload_match_template 为准，旧 JSON 只做首次迁移兜底。"""
-    try:
-        db_config = load_upload_match_templates_config(db_name)
-    except Exception as e:
-        safe_message = str(e).splitlines()[0]
-        print(f"   ⚠️ 读取数据库业务模板失败，临时使用本地 JSON 兜底: {safe_message}")
-        return _load_legacy_upload_match_config(db_name)
-
-    if db_config or not seed_from_legacy:
-        return db_config
-
-    legacy_config = _load_legacy_upload_match_config(db_name)
-    if not legacy_config:
-        return {}
-
-    try:
-        seeded = seed_upload_match_templates_from_config(
-            db_name,
-            legacy_config,
-            current_user=get_current_user(),
-        )
-        if seeded:
-            print(f"   ✅ 已从本地 JSON 初始化 {seeded} 个业务模板到 knowledge.upload_match_template")
-            return load_upload_match_templates_config(db_name)
-    except Exception as e:
-        safe_message = str(e).splitlines()[0]
-        print(f"   ⚠️ 初始化数据库业务模板失败，临时使用本地 JSON 兜底: {safe_message}")
-
-    return legacy_config
-
-
-def _get_upload_match_config(
-    db_name: str,
-    template_key: str | None = None,
-    source_table_name: str | None = None,
-) -> dict:
-    db_config = _load_upload_match_db_config(db_name)
-    merged: dict = {}
-
-    default_config = db_config.get('default')
-    if isinstance(default_config, dict):
-        merged.update(default_config)
-
-    if source_table_name and source_table_name != template_key:
-        source_config = db_config.get(source_table_name)
-        if isinstance(source_config, dict):
-            merged.update(source_config)
-
-    if template_key:
-        template_config = db_config.get(template_key)
-        if isinstance(template_config, dict):
-            merged.update(template_config)
-
-    return merged
-
-
-def _persist_upload_template_to_knowledge(db_name: str, template_key: str, config: dict) -> dict:
-    try:
-        upsert_upload_match_template(
-            db_name,
-            template_key,
-            config,
-            current_user=get_current_user(),
-        )
-        return {'ok': True, 'error': ''}
-    except Exception as e:
-        safe_message = str(e).splitlines()[0]
-        print(f"   ⚠️ 同步上传匹配模板到 knowledge 失败: {safe_message}")
-        return {'ok': False, 'error': safe_message}
-
-
-def _delete_upload_template_from_knowledge(db_name: str, template_key: str) -> dict:
-    try:
-        delete_upload_match_template_record(db_name, template_key, current_user=get_current_user())
-        return {'ok': True, 'error': ''}
-    except Exception as e:
-        safe_message = str(e).splitlines()[0]
-        print(f"   ⚠️ 删除 knowledge 上传匹配模板失败: {safe_message}")
-        return {'ok': False, 'error': safe_message}
 
 
 def _format_upload_template_timestamp() -> str:
@@ -2055,7 +1967,7 @@ def upload_match_templates():
     if not db_name:
         return jsonify({'error': 'missing db_name'}), 400
     try:
-        db_config = _load_upload_match_db_config(db_name)
+        db_config = load_upload_match_templates_config(db_name)
         include_disabled = request.args.get('include_disabled', '').strip().lower() in {'1', 'true', 'yes'}
         templates = get_upload_match_templates(db_name, db_config=db_config, enabled_only=not include_disabled)
         return jsonify({'status': 'success', 'templates': templates})
@@ -2120,7 +2032,7 @@ def upload_match_configs_api():
         if not db_name:
             return jsonify({'error': 'missing db_name', 'status': 'error'}), 400
         try:
-            db_config = _load_upload_match_db_config(db_name)
+            db_config = load_upload_match_templates_config(db_name)
             return jsonify({
                 'status': 'success',
                 'db_name': db_name,
@@ -2137,24 +2049,17 @@ def upload_match_configs_api():
         return jsonify({'error': 'missing db_name', 'status': 'error'}), 400
 
     try:
-        db_config = dict(_load_upload_match_db_config(db_name))
+        db_config = dict(load_upload_match_templates_config(db_name))
         if request.method == 'DELETE':
             template_key = (data.get('template_key') or '').strip()
             if not template_key:
                 return jsonify({'error': 'missing template_key', 'status': 'error'}), 400
-            knowledge_sync = _delete_upload_template_from_knowledge(db_name, template_key)
-            if not knowledge_sync.get('ok'):
-                return jsonify({
-                    'status': 'error',
-                    'error': knowledge_sync.get('error') or '删除数据库业务模板失败',
-                    'knowledge_sync': knowledge_sync,
-                }), 500
+            delete_upload_match_template_record(db_name, template_key, current_user=get_current_user())
             db_config.pop(template_key, None)
             return jsonify({
                 'status': 'success',
                 'db_name': db_name,
                 'db_config': db_config,
-                'knowledge_sync': knowledge_sync,
             })
 
         if request.method == 'PATCH':
@@ -2171,7 +2076,7 @@ def upload_match_configs_api():
                 data.get('is_enabled'),
                 current_user=get_current_user(),
             )
-            db_config = dict(_load_upload_match_db_config(db_name, seed_from_legacy=False))
+            db_config = dict(load_upload_match_templates_config(db_name))
             return jsonify({
                 'status': 'success',
                 'db_name': db_name,
@@ -2203,14 +2108,8 @@ def upload_match_configs_api():
                 'error': '字段映射为空，请先解析并填充字段后再保存',
             }), 400
 
-        knowledge_sync = _persist_upload_template_to_knowledge(db_name, template_key, config)
-        if not knowledge_sync.get('ok'):
-            return jsonify({
-                'status': 'error',
-                'error': knowledge_sync.get('error') or '保存数据库业务模板失败',
-                'knowledge_sync': knowledge_sync,
-            }), 500
-        db_config = dict(_load_upload_match_db_config(db_name, seed_from_legacy=False))
+        upsert_upload_match_template(db_name, template_key, config, current_user=get_current_user())
+        db_config = dict(load_upload_match_templates_config(db_name))
         return jsonify({
             'status': 'success',
             'db_name': db_name,
@@ -2218,7 +2117,6 @@ def upload_match_configs_api():
             'db_config': db_config,
             'templates': get_upload_match_templates(db_name, db_config=db_config),
             'duplicate_keys': duplicate_keys,
-            'knowledge_sync': knowledge_sync,
         })
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -2269,7 +2167,7 @@ def match_uploaded_table():
             return jsonify({'error': f'未找到目标表: {source_table_name}', 'status': 'error'}), 404
 
         source_columns = source_table_meta.get('columns') or []
-        configured_upload_match_config = _get_upload_match_config(
+        configured_upload_match_config = get_upload_match_config_from_db(
             db_name,
             template_key=template_key if use_template_mode else None,
             source_table_name=source_table_name if use_template_mode else None,
@@ -2616,7 +2514,7 @@ def upload_excel():
     effective_table_name = effective_table_name.strip() or 'upload'
     config_template_key = template_key if use_template_mode else None
     config_source_table_name = effective_table_name if use_template_mode else None
-    upload_match_config = _get_upload_match_config(
+    upload_match_config = get_upload_match_config_from_db(
         db_name,
         template_key=config_template_key,
         source_table_name=config_source_table_name,

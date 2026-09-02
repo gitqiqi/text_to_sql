@@ -274,22 +274,6 @@ def get_upload_match_config_from_db(
     return merged
 
 
-def seed_upload_match_templates_from_config(
-    db_name: str,
-    db_config: Dict,
-    current_user: Optional[Dict] = None,
-) -> int:
-    """把历史 JSON 配置导入数据库；已有模板会被 upsert。"""
-    count = 0
-    for template_key, config in (db_config or {}).items():
-        template_key = str(template_key or '').strip()
-        if not template_key or not isinstance(config, dict):
-            continue
-        upsert_upload_match_template(db_name, template_key, config, current_user=current_user)
-        count += 1
-    return count
-
-
 def upsert_upload_match_template(
     db_name: str,
     template_key: str,

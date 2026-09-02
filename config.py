@@ -16,7 +16,6 @@ load_dotenv()
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 KB_META_PATH = _PROJECT_ROOT / "knowledge_meta.json"
-UPLOAD_MATCH_CONFIG_PATH = _PROJECT_ROOT / "upload_match_configs.json"
 
 
 def _load_kb_meta() -> Dict:
@@ -51,21 +50,6 @@ def clear_knowledge_file_override(db_name: str) -> None:
 def get_knowledge_override(db_name: str) -> Optional[Dict]:
     """获取知识库覆盖配置"""
     return _load_kb_meta().get(db_name)
-
-
-def _load_upload_match_meta() -> Dict:
-    """加载上传匹配配置"""
-    if not UPLOAD_MATCH_CONFIG_PATH.is_file():
-        return {}
-    try:
-        return json.loads(UPLOAD_MATCH_CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _write_upload_match_meta(meta: Dict) -> None:
-    """保存上传匹配配置"""
-    UPLOAD_MATCH_CONFIG_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def normalize_upload_template_label(value: str) -> str:
@@ -114,58 +98,6 @@ KNOWLEDGE_BASE_CONFIGS = {
     },
 }
 
-# 上传 Excel 后的业务匹配配置
-# 默认建议只配置给后端，不在前端暴露字段名
-UPLOAD_MATCH_CONFIGS = _load_upload_match_meta() or {
-    # 'hologres': {
-    #     'default': {
-    #         'keyword_column': 'keyword',
-    #         'match_mode': 'exact',
-    #         'return_fields': [],
-    #     },
-    #     'sales_data': {
-    #         'keyword_column': 'keyword',
-    #         'match_table': 'public.customer_dim',
-    #         'match_field': 'customer_name',
-    #         'return_fields': [],
-    #     },
-    # }
-}
-
-
-def get_upload_match_configs() -> Dict:
-    """获取全部上传匹配配置"""
-    return _load_upload_match_meta() or UPLOAD_MATCH_CONFIGS
-
-
-def save_upload_match_configs(meta: Dict) -> None:
-    """保存全部上传匹配配置"""
-    global UPLOAD_MATCH_CONFIGS
-    UPLOAD_MATCH_CONFIGS = meta or {}
-    _write_upload_match_meta(UPLOAD_MATCH_CONFIGS)
-
-
-def get_upload_match_config_for_db(db_name: str) -> Dict:
-    """获取指定数据库的上传匹配配置"""
-    return get_upload_match_configs().get(db_name) or {}
-
-
-def set_upload_match_config_for_db(db_name: str, db_config: Dict) -> None:
-    """保存指定数据库的上传匹配配置"""
-    meta = get_upload_match_configs()
-    meta[db_name] = db_config or {}
-    save_upload_match_configs(meta)
-
-
-def delete_upload_match_template(db_name: str, template_key: str) -> None:
-    """删除指定数据库下的模板"""
-    meta = get_upload_match_configs()
-    db_config = meta.get(db_name) or {}
-    if template_key in db_config:
-        db_config.pop(template_key, None)
-        meta[db_name] = db_config
-        save_upload_match_configs(meta)
-
 
 def get_database_config(db_name: str) -> Optional[Dict]:
     """获取指定数据库的配置"""
@@ -202,39 +134,13 @@ def get_knowledge_base_config(db_name: str) -> Dict:
     return default_config
 
 
-def get_upload_match_config(
-    db_name: str,
-    template_key: Optional[str] = None,
-    source_table_name: Optional[str] = None,
-) -> Dict:
-    """获取上传匹配配置（支持数据库默认配置 + 模板覆盖 + 表级覆盖）"""
-    db_config = UPLOAD_MATCH_CONFIGS.get(db_name) or {}
-    merged: Dict = {}
-
-    default_config = db_config.get('default')
-    if isinstance(default_config, dict):
-        merged.update(default_config)
-
-    if source_table_name and source_table_name != template_key:
-        source_config = db_config.get(source_table_name)
-        if isinstance(source_config, dict):
-            merged.update(source_config)
-
-    if template_key:
-        template_config = db_config.get(template_key)
-        if isinstance(template_config, dict):
-            merged.update(template_config)
-
-    return merged
-
-
 def get_upload_match_templates(
     db_name: str,
     db_config: Optional[Dict] = None,
     enabled_only: bool = True,
 ) -> List[Dict]:
     """获取该数据库下可供前端展示的模板列表"""
-    db_config = db_config if isinstance(db_config, dict) else (get_upload_match_configs().get(db_name) or {})
+    db_config = db_config if isinstance(db_config, dict) else {}
     template_items: List[tuple[str, Dict, str, str]] = []
     label_counts: Dict[str, int] = {}
 
