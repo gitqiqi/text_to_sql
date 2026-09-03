@@ -3316,15 +3316,13 @@
                                     <div class="field-match-row field-match-primary-row">
                                         <div class="upload-field-pair-side upload-field-pair-source">
                                             <label class="workflow-node-title" for="uploadKeywordColumn">目标表字段</label>
-                                            <select id="uploadKeywordColumn" class="tool-input upload-keyword-column-select" disabled>
-                                                <option value="">自动识别目标表字段</option>
-                                            </select>
+                                            <input type="text" id="uploadKeywordColumn" class="tool-input upload-keyword-column-select" list="uploadSourceFieldSuggestions" placeholder="输入目标表字段搜索" autocomplete="off" disabled>
+                                            <datalist id="uploadSourceFieldSuggestions"></datalist>
                                         </div>
                                         <div class="upload-field-pair-side upload-field-pair-target">
                                             <label class="workflow-node-title" for="uploadTemplateMatchField">模板字段</label>
-                                            <select id="uploadTemplateMatchField" class="tool-input upload-template-match-field-select" disabled>
-                                                <option value="" selected disabled hidden></option>
-                                            </select>
+                                            <input type="text" id="uploadTemplateMatchField" class="tool-input upload-template-match-field-select" list="uploadTemplateFieldSuggestions" placeholder="输入模板字段搜索" autocomplete="off" disabled>
+                                            <datalist id="uploadTemplateFieldSuggestions"></datalist>
                                         </div>
                                         <div class="field-match-action-cell">
                                             <button type="button" class="field-match-action-btn field-match-clear-btn" id="uploadPrimaryMatchClearBtn" title="清空字段" aria-label="清空字段">清空</button>
@@ -3679,6 +3677,9 @@
         let matchTemplateListMode = false;
         let canvasEditingTemplateKey = '';
         let matchTablePickerOutsideHandler = null;
+        let matchTableValuesCache = null;
+        let matchTableLookupCache = null;
+        const FIELD_PICKER_OPTION_LIMIT = 120;
         const UPLOAD_NEW_TABLE_VALUE = '__upload_new_table__';
 
         function getSelectedOptionText(select) {
@@ -3781,13 +3782,112 @@
             return String(item.label || item.table_name || '').trim();
         }
 
-        function renderCanvasSelectOptions(values = [], selectedValue = '', placeholder = '请选择') {
-            const selected = String(selectedValue || '').trim();
-            const selectedNormalized = selected.toLowerCase();
+        function normalizeOptionValues(values = []) {
             const seen = new Set();
             const safeValues = Array.isArray(values)
                 ? values.map(value => String(value || '').trim()).filter(Boolean)
                 : [];
+            return safeValues.filter(value => {
+                const normalized = value.toLowerCase();
+                if (seen.has(normalized)) return false;
+                seen.add(normalized);
+                return true;
+            });
+        }
+
+        function getLimitedFieldPickerValues(values = [], query = '', selectedValue = '', limit = FIELD_PICKER_OPTION_LIMIT) {
+            const safeValues = normalizeOptionValues(values);
+            const normalizedQuery = String(query || '').trim().toLowerCase();
+            const selected = String(selectedValue || '').trim();
+            const selectedNormalized = selected.toLowerCase();
+            const result = [];
+            const addValue = value => {
+                const normalized = String(value || '').trim().toLowerCase();
+                if (!normalized || result.some(item => item.toLowerCase() === normalized)) return;
+                result.push(value);
+            };
+
+            if (selected) {
+                const selectedMatch = safeValues.find(value => value.toLowerCase() === selectedNormalized);
+                addValue(selectedMatch || selected);
+            }
+
+            if (!normalizedQuery) {
+                safeValues.slice(0, limit).forEach(addValue);
+                return result.slice(0, limit + (selected ? 1 : 0));
+            }
+
+            for (const value of safeValues) {
+                if (result.length >= limit + (selected ? 1 : 0)) break;
+                if (value.toLowerCase().startsWith(normalizedQuery)) addValue(value);
+            }
+            for (const value of safeValues) {
+                if (result.length >= limit + (selected ? 1 : 0)) break;
+                const normalized = value.toLowerCase();
+                if (!normalized.startsWith(normalizedQuery) && normalized.includes(normalizedQuery)) {
+                    addValue(value);
+                }
+            }
+            return result;
+        }
+
+        function renderFieldPickerOptions(id, values = [], query = '', selectedValue = '') {
+            const list = document.getElementById(id);
+            if (!list) return;
+            list.innerHTML = getLimitedFieldPickerValues(values, query, selectedValue)
+                .map(value => `<option value="${escapeAttr(value)}"></option>`)
+                .join('');
+        }
+
+        function bindFieldPickerInput(input, getValues, listId, onCommit = null) {
+            if (!input || input.dataset.fieldPickerBound === 'true') return;
+            input.dataset.fieldPickerBound = 'true';
+            const refreshOptions = () => {
+                const values = typeof getValues === 'function' ? getValues() : [];
+                renderFieldPickerOptions(listId, values, input.value, input.value);
+            };
+            input.addEventListener('focus', refreshOptions);
+            input.addEventListener('input', refreshOptions);
+            input.addEventListener('change', () => {
+                refreshOptions();
+                if (typeof onCommit === 'function') onCommit();
+            });
+        }
+
+        function resetMatchTableCaches() {
+            matchTableValuesCache = null;
+            matchTableLookupCache = null;
+        }
+
+        function getMatchTableSource() {
+            return matchTargetTables.length > 0 ? matchTargetTables : allTables;
+        }
+
+        function getMatchTableLookupCache() {
+            if (matchTableLookupCache) return matchTableLookupCache;
+            const lookup = new Map();
+            getMatchTableSource().forEach(table => {
+                const fullName = getFullTableName(table);
+                const columns = Array.isArray(table.columns) ? table.columns : [];
+                [
+                    fullName,
+                    table.table_name || '',
+                ].filter(Boolean).forEach(key => {
+                    const normalized = String(key || '').trim().toLowerCase();
+                    if (!lookup.has(normalized)) {
+                        lookup.set(normalized, { fullName, columns });
+                    }
+                });
+            });
+            matchTableLookupCache = lookup;
+            return lookup;
+        }
+
+        function renderCanvasSelectOptions(values = [], selectedValue = '', placeholder = '请选择') {
+            const selected = String(selectedValue || '').trim();
+            const selectedNormalized = selected.toLowerCase();
+            const seen = new Set();
+            const safeValues = normalizeOptionValues(values);
             const emptyOption = placeholder === ''
                 ? renderHiddenBlankOption(!selected)
                 : `<option value="">${escapeHtml(placeholder)}</option>`;
@@ -3814,20 +3914,17 @@
         }
 
         function getMatchCanvasTableValues() {
-            const tables = matchTargetTables.length > 0 ? matchTargetTables : allTables;
-            return tables.map(table => getFullTableName(table)).filter(Boolean);
+            if (!matchTableValuesCache) {
+                matchTableValuesCache = getMatchTableSource().map(table => getFullTableName(table)).filter(Boolean);
+            }
+            return matchTableValuesCache;
         }
 
         function getCanonicalTableValue(value = '') {
             const raw = String(value || '').trim();
             if (!raw) return '';
-            const tables = matchTargetTables.length > 0 ? matchTargetTables : allTables;
-            const found = tables.find(table => {
-                const fullName = getFullTableName(table);
-                return String(fullName || '').toLowerCase() === raw.toLowerCase()
-                    || String(table.table_name || '').toLowerCase() === raw.toLowerCase();
-            });
-            return found ? getFullTableName(found) : raw;
+            const found = getMatchTableLookupCache().get(raw.toLowerCase());
+            return found ? found.fullName : raw;
         }
 
         function getActiveTemplateKey() {
@@ -4064,7 +4161,7 @@
                 populateCanvasHeaderInputs();
             }
             syncMatchWorkspaceMode();
-            refreshMatchWorkspaceSummary();
+            refreshMatchWorkspaceSummary(true);
         }
 
         function closeTemplateConfigMode() {
@@ -4580,7 +4677,6 @@
                 const currentTargetFilter = targetFilterInput
                     ? targetFilterInput.value
                     : (config.target_filter || activeConfig.target_filter || '');
-                const targetFieldOptions = getUploadConfigTargetColumns(currentTable);
                 const currentSqlText = (document.getElementById('matchSqlImportText')?.value || config.sql_text || activeConfig.sql_text || buildTemplateSqlDraft({
                     ...matchFieldConfig,
                     match_table: currentTable,
@@ -4627,9 +4723,7 @@
                                     <div class="match-field-table-row match-canvas-field-row" data-row-index="${index}" data-db-field="${escapeAttr(row.db_field || '')}" data-business-field="${escapeAttr(row.business_field || '')}">
                                         <div class="match-field-row-index">${index + 1}</div>
                                         <div>
-                                            <select class="match-canvas-input match-canvas-db-field">
-                                                ${renderCanvasSelectOptions(targetFieldOptions, row.db_field || '', '选择数据库字段')}
-                                            </select>
+                                            <input type="text" class="match-canvas-input match-canvas-db-field" list="matchCanvasTargetFieldSuggestions" value="${escapeAttr(row.db_field || '')}" placeholder="输入数据库字段搜索" autocomplete="off">
                                         </div>
                                         <div>
                                             <input type="text" class="match-canvas-input match-canvas-business-field" value="${escapeAttr(row.business_field || '')}" placeholder="输入输出字段名">
@@ -4691,15 +4785,25 @@
                         renderMatchFieldBranches(getCurrentConfigWithRows(currentRows));
                     });
                 });
-                wrap.querySelectorAll('.match-canvas-db-field').forEach(select => {
-                    select.addEventListener('change', () => {
-                        const row = select.closest('.match-canvas-field-row');
-                        const businessInput = row?.querySelector('.match-canvas-business-field');
-                        if (row) row.dataset.dbField = select.value.trim();
-                        if (businessInput && !businessInput.value.trim()) {
-                            businessInput.value = select.value;
-                            if (row) row.dataset.businessField = businessInput.value.trim();
-                        }
+                renderFieldPickerOptions('matchCanvasTargetFieldSuggestions', getUploadConfigTargetColumns(currentTable), '', '');
+                wrap.querySelectorAll('.match-canvas-db-field').forEach(input => {
+                    bindFieldPickerInput(
+                        input,
+                        () => getUploadConfigTargetColumns(document.getElementById('matchCanvasMatchTable')?.value || currentTable),
+                        'matchCanvasTargetFieldSuggestions',
+                        () => {
+                            const row = input.closest('.match-canvas-field-row');
+                            const businessInput = row?.querySelector('.match-canvas-business-field');
+                            if (row) row.dataset.dbField = input.value.trim();
+                            if (businessInput && !businessInput.value.trim()) {
+                                businessInput.value = input.value;
+                                if (row) row.dataset.businessField = businessInput.value.trim();
+                            }
+                        },
+                    );
+                    input.addEventListener('input', () => {
+                        const row = input.closest('.match-canvas-field-row');
+                        if (row) row.dataset.dbField = input.value.trim();
                     });
                 });
                 wrap.querySelectorAll('.match-canvas-business-field').forEach(input => {
@@ -4769,7 +4873,7 @@
             }).join('') + (rows.length > visibleRows.length ? '<div class="match-workflow-more">......</div>' : '');
         }
 
-        function refreshMatchWorkspaceSummary() {
+        function refreshMatchWorkspaceSummary(forceRender = false) {
             const templateSelect = document.getElementById('uploadTemplateSelect');
             const tableEl = document.getElementById('matchWorkspaceTable');
 
@@ -4778,7 +4882,9 @@
             const activeConfig = uploadCanvasEditMode ? getActiveTemplateConfig() : config;
 
             if (uploadCanvasEditMode) {
-                renderMatchFieldBranches(activeConfig);
+                if (forceRender || !document.getElementById('matchFieldConfigPanel')) {
+                    renderMatchFieldBranches(activeConfig);
+                }
                 return;
             }
 
@@ -5053,16 +5159,22 @@
                 canvasEditingTemplateKey = document.getElementById('uploadTemplateSelect').value || '';
             }
             renderUploadTemplateMatchFields();
-            refreshMatchWorkspaceSummary();
+            refreshMatchWorkspaceSummary(uploadCanvasEditMode);
         });
 
-        document.getElementById('uploadKeywordColumn').addEventListener('change', () => {
-            refreshMatchWorkspaceSummary();
-        });
+        bindFieldPickerInput(
+            document.getElementById('uploadKeywordColumn'),
+            () => uploadSourceColumns,
+            'uploadSourceFieldSuggestions',
+            refreshMatchWorkspaceSummary,
+        );
 
-        document.getElementById('uploadTemplateMatchField').addEventListener('change', () => {
-            refreshMatchWorkspaceSummary();
-        });
+        bindFieldPickerInput(
+            document.getElementById('uploadTemplateMatchField'),
+            () => getUploadTemplateFieldContext().columns,
+            'uploadTemplateFieldSuggestions',
+            refreshMatchWorkspaceSummary,
+        );
 
         document.getElementById('uploadPrimaryMatchClearBtn')?.addEventListener('click', () => {
             const keywordSelect = document.getElementById('uploadKeywordColumn');
@@ -5152,6 +5264,12 @@
         document.getElementById('uploadConfigMatchTable').addEventListener('input', () => {
             refreshUploadConfigFieldSuggestions();
         });
+
+        bindFieldPickerInput(
+            document.getElementById('uploadConfigMatchField'),
+            () => getUploadTemplateMatchFieldValues({ return_fields: collectUploadConfigFieldRows() }, true),
+            'uploadConfigMatchFieldSuggestions',
+        );
 
         document.getElementById('uploadConfigSaveBtn').addEventListener('click', async () => {
             await saveUploadMatchConfig();
@@ -5588,9 +5706,11 @@
                     allTables = schemas.length > 0
                         ? matchTargetTables.filter(table => schemas.includes(String(table.schema || '')))
                         : matchTargetTables.slice();
+                    resetMatchTableCaches();
                 } else {
                     allTables = [];
                     matchTargetTables = [];
+                    resetMatchTableCaches();
                 }
                 renderMatchCanvasSuggestions();
                 refreshUploadConfigFieldSuggestions();
@@ -5599,6 +5719,7 @@
                 console.error('加载表失败:', error);
                 allTables = [];
                 matchTargetTables = [];
+                resetMatchTableCaches();
                 renderMatchCanvasSuggestions();
                 refreshUploadConfigFieldSuggestions();
                 renderUploadTemplateMatchFields();
@@ -5721,22 +5842,12 @@
             };
         }
 
-        function getUploadSourceFieldOptions(selectedValue = '') {
-            return renderCanvasSelectOptions(uploadSourceColumns, selectedValue, '自动识别目标表字段');
-        }
-
         function getUploadTemplateFieldContext() {
             const templateSelect = document.getElementById('uploadTemplateSelect');
             const templateKey = templateSelect?.value || '';
             const config = templateKey ? (uploadMatchConfigs[templateKey] || {}) : {};
             const columns = getUploadTemplateMatchFieldValues(config);
             return { templateKey, config, columns };
-        }
-
-        function getUploadTemplateFieldOptions(selectedValue = '') {
-            const { config, columns } = getUploadTemplateFieldContext();
-            const nextValue = resolveUploadTemplateMatchFieldValue(selectedValue || '', config);
-            return renderCanvasSelectOptions(columns, nextValue, '');
         }
 
         function readUploadExtraMatchFieldPairs({ keepBlank = false } = {}) {
@@ -5763,19 +5874,17 @@
             const { templateKey, columns: targetColumns } = getUploadTemplateFieldContext();
             const targetDisabled = !templateKey || targetColumns.length === 0;
             const sourceDisabled = uploadSourceColumns.length === 0;
+            renderFieldPickerOptions('uploadSourceFieldSuggestions', uploadSourceColumns, '', '');
+            renderFieldPickerOptions('uploadTemplateFieldSuggestions', targetColumns, '', '');
             wrap.innerHTML = uploadExtraMatchFieldPairs.map((pair, index) => `
                 <div class="extra-match-pair" data-row-index="${index}">
                     <div class="upload-field-pair-side upload-field-pair-source">
                         <span class="workflow-node-title" aria-hidden="true"></span>
-                        <select class="tool-input upload-extra-source-field" ${sourceDisabled ? 'disabled' : ''}>
-                            ${getUploadSourceFieldOptions(pair.source_field || '')}
-                        </select>
+                        <input type="text" class="tool-input upload-extra-source-field" list="uploadSourceFieldSuggestions" value="${escapeAttr(pair.source_field || '')}" placeholder="输入目标表字段搜索" autocomplete="off" ${sourceDisabled ? 'disabled' : ''}>
                     </div>
                     <div class="upload-field-pair-side upload-field-pair-target">
                         <span class="workflow-node-title" aria-hidden="true"></span>
-                        <select class="tool-input upload-extra-template-field" ${targetDisabled ? 'disabled' : ''}>
-                            ${getUploadTemplateFieldOptions(pair.target_field || '')}
-                        </select>
+                        <input type="text" class="tool-input upload-extra-template-field" list="uploadTemplateFieldSuggestions" value="${escapeAttr(pair.target_field || '')}" placeholder="输入模板字段搜索" autocomplete="off" ${targetDisabled ? 'disabled' : ''}>
                     </div>
                     <div class="field-match-action-cell">
                         <button type="button" class="extra-match-remove" title="删除字段" aria-label="删除字段">×</button>
@@ -5783,8 +5892,14 @@
                 </div>
             `).join('');
 
-            wrap.querySelectorAll('.upload-extra-source-field, .upload-extra-template-field').forEach(select => {
-                select.addEventListener('change', () => {
+            wrap.querySelectorAll('.upload-extra-source-field').forEach(input => {
+                bindFieldPickerInput(input, () => uploadSourceColumns, 'uploadSourceFieldSuggestions', () => {
+                    uploadExtraMatchFieldPairs = readUploadExtraMatchFieldPairs({ keepBlank: true });
+                    refreshMatchWorkspaceSummary();
+                });
+            });
+            wrap.querySelectorAll('.upload-extra-template-field').forEach(input => {
+                bindFieldPickerInput(input, () => getUploadTemplateFieldContext().columns, 'uploadTemplateFieldSuggestions', () => {
                     uploadExtraMatchFieldPairs = readUploadExtraMatchFieldPairs({ keepBlank: true });
                     refreshMatchWorkspaceSummary();
                 });
@@ -5866,9 +5981,10 @@
             const currentValue = requestedValue || (hasPrevious ? previousValue : '');
             const nextValue = resolveUploadTemplateMatchFieldValue(currentValue, config);
 
-            matchFieldSelect.innerHTML = renderCanvasSelectOptions(columns, nextValue, '');
+            matchFieldSelect.value = nextValue || '';
+            matchFieldSelect.placeholder = columns.length > 0 ? '输入模板字段搜索' : '模板暂无字段';
+            renderFieldPickerOptions('uploadTemplateFieldSuggestions', columns, '', nextValue);
             matchFieldSelect.disabled = !templateKey || columns.length === 0;
-            if (nextValue) matchFieldSelect.value = nextValue;
             uploadExtraMatchFieldPairs = readUploadExtraMatchFieldPairs({ keepBlank: true }).map(pair => {
                 const resolvedTarget = resolveUploadTemplateMatchFieldValue(pair.target_field || '', config);
                 const keepTarget = columns.some(value => String(value).toLowerCase() === resolvedTarget.toLowerCase());
@@ -5892,12 +6008,13 @@
             const requestedValue = String(selectedValue || '').trim();
             const previousValue = keywordSelect.value || '';
             const currentValue = requestedValue || (safeColumns.includes(previousValue) ? previousValue : '');
-            keywordSelect.innerHTML = getUploadSourceFieldOptions(currentValue);
+            keywordSelect.value = currentValue || '';
+            keywordSelect.placeholder = safeColumns.length > 0 ? '输入目标表字段搜索' : '暂无目标表字段';
+            renderFieldPickerOptions('uploadSourceFieldSuggestions', safeColumns, '', currentValue);
             keywordSelect.disabled = safeColumns.length === 0;
             const addBtn = document.getElementById('uploadAddFieldPairBtn');
             if (addBtn) addBtn.disabled = safeColumns.length === 0;
 
-            if (currentValue) keywordSelect.value = currentValue;
             uploadExtraMatchFieldPairs = readUploadExtraMatchFieldPairs({ keepBlank: true }).map(pair => ({
                 source_field: safeColumns.includes(pair.source_field || '') ? pair.source_field : '',
                 target_field: pair.target_field || '',
@@ -6003,13 +6120,7 @@
         function getUploadConfigTargetColumns(matchTable = '') {
             const target = String(matchTable || '').trim();
             if (!target) return [];
-            const normalizedTarget = target.toLowerCase();
-            const tables = matchTargetTables.length > 0 ? matchTargetTables : allTables;
-            const found = tables.find(table => {
-                const fullName = getFullTableName(table);
-                return String(fullName || '').toLowerCase() === normalizedTarget
-                    || String(table.table_name || '').toLowerCase() === normalizedTarget;
-            });
+            const found = getMatchTableLookupCache().get(target.toLowerCase());
             return Array.isArray(found?.columns) ? found.columns : [];
         }
 
@@ -6041,8 +6152,8 @@
             }
 
             const currentMatchTable = getCanonicalTableValue(matchTable || document.getElementById('matchCanvasMatchTable')?.value || '');
-            renderDatalistOptions('matchCanvasTargetFieldSuggestions', getUploadConfigTargetColumns(currentMatchTable));
-            renderDatalistOptions('matchCanvasUploadFieldSuggestions', uploadSourceColumns);
+            renderFieldPickerOptions('matchCanvasTargetFieldSuggestions', getUploadConfigTargetColumns(currentMatchTable), '', '');
+            renderFieldPickerOptions('matchCanvasUploadFieldSuggestions', uploadSourceColumns, '', '');
             refreshMatchCanvasTargetFieldSelects(currentMatchTable, false);
         }
 
@@ -6092,11 +6203,17 @@
         function refreshMatchCanvasTargetFieldSelects(matchTable = '', clearCurrent = false) {
             const canonicalTable = getCanonicalTableValue(matchTable || document.getElementById('matchCanvasMatchTable')?.value || '');
             const columns = getUploadConfigTargetColumns(canonicalTable);
-            document.querySelectorAll('.match-canvas-db-field').forEach(select => {
-                if (select.tagName !== 'SELECT') return;
-                const current = clearCurrent ? '' : select.value;
-                select.innerHTML = renderCanvasSelectOptions(columns, current, '选择数据库字段');
-                select.value = current;
+            renderFieldPickerOptions('matchCanvasTargetFieldSuggestions', columns, '', '');
+            document.querySelectorAll('.match-canvas-db-field').forEach(control => {
+                if (clearCurrent) {
+                    control.value = '';
+                    return;
+                }
+                if (control.tagName === 'SELECT') {
+                    const current = control.value;
+                    control.innerHTML = renderCanvasSelectOptions(columns, current, '选择数据库字段');
+                    control.value = current;
+                }
             });
 
             const meta = document.querySelector('#matchFieldConfigPanel .match-fields-meta');
@@ -6156,16 +6273,20 @@
             const safeColumns = Array.isArray(columns)
                 ? columns.map(col => String(col || '').trim()).filter(Boolean)
                 : [];
-            suggestionList.innerHTML = safeColumns
-                .map(col => `<option value="${escapeAttr(col)}"></option>`)
-                .join('');
+            renderFieldPickerOptions('uploadConfigFieldSuggestions', safeColumns, '', '');
         }
 
         function refreshUploadConfigMatchFieldSuggestions(rows = null) {
             const suggestionList = document.getElementById('uploadConfigMatchFieldSuggestions');
             if (!suggestionList) return;
             const safeRows = Array.isArray(rows) ? rows : collectUploadConfigFieldRows();
-            renderDatalistOptions('uploadConfigMatchFieldSuggestions', getUploadTemplateMatchFieldValues({ return_fields: safeRows }, true));
+            const currentValue = document.getElementById('uploadConfigMatchField')?.value || '';
+            renderFieldPickerOptions(
+                'uploadConfigMatchFieldSuggestions',
+                getUploadTemplateMatchFieldValues({ return_fields: safeRows }, true),
+                currentValue,
+                currentValue,
+            );
         }
 
         function collectUploadConfigFieldRows() {
@@ -6227,6 +6348,13 @@
                 toggle.addEventListener('change', () => {
                     toggle.closest('.field-mapping-row')?.classList.toggle('disabled', !toggle.checked);
                 });
+            });
+            wrap.querySelectorAll('.field-mapping-db').forEach(input => {
+                bindFieldPickerInput(
+                    input,
+                    () => getUploadConfigTargetColumns(document.getElementById('uploadConfigMatchTable')?.value || ''),
+                    'uploadConfigFieldSuggestions',
+                );
             });
 
             wrap.querySelectorAll('.field-mapping-remove').forEach(removeBtn => {
@@ -6325,6 +6453,10 @@
 
         function setSelectValueIfPresent(select, value) {
             if (!select || !value) return;
+            if (select.tagName !== 'SELECT') {
+                select.value = value;
+                return;
+            }
             if (Array.from(select.options || []).some(option => option.value === value)) {
                 select.value = value;
             }
