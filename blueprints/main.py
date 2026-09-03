@@ -12,7 +12,7 @@ from urllib.parse import quote
 from flask import render_template, request, jsonify, redirect, url_for
 from flask import Response, stream_with_context
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from werkzeug.utils import secure_filename
 from . import main_bp
 from config import (
@@ -608,21 +608,21 @@ def _get_cached_upload_tables(db_name: str, limit: int) -> list[dict]:
 def _get_live_upload_tables(db_name: str, limit: int) -> list[dict]:
     engine = DatabasePoolManager.get_engine(db_name)
     with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT table_name, column_name, ordinal_position
-            FROM information_schema.columns
+        table_rows = conn.execute(text("""
+            SELECT table_name
+            FROM information_schema.tables
             WHERE table_schema = 'tmp'
-            ORDER BY table_name, ordinal_position
+            ORDER BY table_name DESC
         """)).fetchall()
 
-    grouped = {}
-    for row in rows:
+    history = []
+    for row in table_rows:
         mapping = row._mapping
         table_name = str(mapping.get('table_name') or '').strip()
         parsed = _parse_upload_table_name(table_name)
         if not parsed:
             continue
-        entry = grouped.setdefault(table_name, {
+        history.append({
             'schema': 'tmp',
             'table_name': parsed['table_name'],
             'label': parsed['timestamp'],
@@ -633,29 +633,73 @@ def _get_live_upload_tables(db_name: str, limit: int) -> list[dict]:
             'columns': [],
             'sort_key': parsed['sort_key'],
         })
+
+    history.sort(key=lambda item: (item['sort_key'], item['table_name']), reverse=True)
+    history = history[:limit]
+    if not history:
+        return []
+
+    grouped = {entry['table_name']: entry for entry in history}
+    column_query = text("""
+        SELECT table_name, column_name, ordinal_position
+        FROM information_schema.columns
+        WHERE table_schema = 'tmp'
+          AND table_name IN :table_names
+        ORDER BY table_name, ordinal_position
+    """).bindparams(bindparam('table_names', expanding=True))
+
+    with engine.connect() as conn:
+        rows = conn.execute(column_query, {'table_names': list(grouped)}).fetchall()
+
+    for row in rows:
+        mapping = row._mapping
+        table_name = str(mapping.get('table_name') or '').strip()
+        entry = grouped.get(table_name)
+        if not entry:
+            continue
         column_name = mapping.get('column_name')
         if column_name:
             entry['columns'].append(str(column_name))
 
-    history = []
-    for entry in grouped.values():
+    for entry in history:
         entry['column_count'] = len(entry['columns'])
-        history.append(entry)
-
-    history.sort(key=lambda item: (item['sort_key'], item['table_name']), reverse=True)
-    return history[:limit]
+    return history
 
 
-def _get_live_database_tables(db_name: str) -> list[dict]:
-    """从数据库实时读取可访问的表和字段，补齐知识库尚未同步的表。"""
+def _get_live_database_schemas(db_name: str) -> list[str]:
     engine = DatabasePoolManager.get_engine(db_name)
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT table_schema, table_name, column_name, ordinal_position
-            FROM information_schema.columns
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY table_schema, table_name, ordinal_position
+            SELECT DISTINCT table_schema
+            FROM information_schema.tables
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'knowledge', 'hg_recyclebin')
+              AND table_schema NOT LIKE 'pg_%'
+            ORDER BY table_schema
         """)).fetchall()
+    return [str(row._mapping.get('table_schema') or '').strip() for row in rows if row._mapping.get('table_schema')]
+
+
+def _get_live_database_tables(db_name: str, schema_names: list[str] | None = None) -> list[dict]:
+    """从数据库实时读取可访问的表和字段，补齐知识库尚未同步的表。"""
+    schemas = [str(schema or '').strip() for schema in (schema_names or []) if str(schema or '').strip()]
+    schema_clause = "AND table_schema IN :schema_names" if schemas else ""
+    query = text(f"""
+        SELECT table_schema, table_name, column_name, ordinal_position
+        FROM information_schema.columns
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'knowledge', 'hg_recyclebin')
+          AND table_schema NOT LIKE 'pg_%'
+          AND table_name NOT LIKE '%_middle%'
+          {schema_clause}
+        ORDER BY table_schema, table_name, ordinal_position
+    """)
+    params = {}
+    if schemas:
+        query = query.bindparams(bindparam('schema_names', expanding=True))
+        params['schema_names'] = schemas
+
+    engine = DatabasePoolManager.get_engine(db_name)
+    with engine.connect() as conn:
+        rows = conn.execute(query, params).fetchall()
 
     grouped = {}
     for row in rows:
@@ -1491,31 +1535,32 @@ def get_db_tables():
     if not db_name:
         return jsonify({'error': 'missing db_name'}), 400
     schema_filter = request.args.get('schema_name', '').strip() or None
+    schemas = [s.strip() for s in (schema_filter or '').split(',') if s.strip()]
     try:
-        kb = KnowledgeBase(db_name)
-        cached_tables = kb.get_table_list()
+        try:
+            live_tables = _get_live_database_tables(db_name, schemas or None)
+            if live_tables:
+                tables = sorted(
+                    live_tables,
+                    key=lambda table: (str(table.get('schema') or ''), str(table.get('table_name') or '')),
+                )
+                return jsonify({'status': 'success', 'tables': tables})
+        except Exception as live_error:
+            print(f'实时表结构读取失败，使用知识库缓存: {live_error}')
+
+        cached_tables = KnowledgeBase(db_name).get_table_list()
         merged = {}
         for table in cached_tables:
             key = (str(table.get('schema') or ''), str(table.get('table_name') or ''))
             if key[1]:
                 merged[key] = dict(table)
-        try:
-            for table in _get_live_database_tables(db_name):
-                key = (str(table.get('schema') or ''), str(table.get('table_name') or ''))
-                if key in merged:
-                    merged[key]['columns'] = table.get('columns') or merged[key].get('columns') or []
-                    merged[key]['column_count'] = len(merged[key]['columns'])
-                else:
-                    merged[key] = table
-        except Exception as live_error:
-            print(f'实时表结构读取失败，使用知识库缓存: {live_error}')
         tables = sorted(
             merged.values(),
             key=lambda table: (str(table.get('schema') or ''), str(table.get('table_name') or '')),
         )
-        if schema_filter:
-            schemas = set(s.strip() for s in schema_filter.split(',') if s.strip())
-            tables = [t for t in tables if t.get('schema') in schemas]
+        if schemas:
+            schema_set = set(schemas)
+            tables = [t for t in tables if t.get('schema') in schema_set]
         return jsonify({'status': 'success', 'tables': tables})
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -1528,8 +1573,14 @@ def get_db_schemas():
     if not db_name:
         return jsonify({'error': 'missing db_name'}), 400
     try:
-        kb = KnowledgeBase(db_name)
-        tables = kb.get_table_list()
+        try:
+            schemas = _get_live_database_schemas(db_name)
+            if schemas:
+                return jsonify({'status': 'success', 'schemas': schemas})
+        except Exception as live_error:
+            print(f'实时 schema 读取失败，使用知识库缓存: {live_error}')
+
+        tables = KnowledgeBase(db_name).get_table_list()
         schemas = sorted(set(t['schema'] for t in tables if t.get('schema')))
         return jsonify({'status': 'success', 'schemas': schemas})
     except Exception as e:

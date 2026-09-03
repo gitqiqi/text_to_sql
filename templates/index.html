@@ -5649,26 +5649,37 @@
                     }
 
                     select.addEventListener('change', () => {
-                        const selected = data.databases.find(db => db.id === select.value);
-                        if (selected) description.textContent = selected.description;
-                        loadSchemas();
-                        loadUploadTemplates();
-                        loadQueryHistory();
-                        selectedTable = null;
-                        selectedTableInfo?.classList.remove('show');
-                        if (tableSearchInput) tableSearchInput.value = '';
+                        handleActiveDatabaseChange(data.databases);
                     });
 
-                    await loadSchemas();
-                    await loadUploadTemplates();
-                    await loadQueryHistory();
+                    await handleActiveDatabaseChange(data.databases);
                 }
             } catch (error) {
                 console.error('加载数据库失败:', error);
             }
         }
 
-        async function loadSchemas() {
+        async function handleActiveDatabaseChange(databases = []) {
+            const select = document.getElementById('databaseSelect');
+            const description = document.getElementById('databaseDescription');
+            if (!select) return;
+
+            const selected = databases.find(db => db.id === select.value);
+            if (selected && description) description.textContent = selected.description;
+            selectedTable = null;
+            selectedTableInfo?.classList.remove('show');
+            if (tableSearchInput) tableSearchInput.value = '';
+
+            await loadSchemas({ loadTables: false });
+            await Promise.allSettled([
+                loadUploadTemplates({ loadHistory: false }),
+                loadUploadTableHistory(),
+                loadDbTables(),
+                loadQueryHistory(),
+            ]);
+        }
+
+        async function loadSchemas({ loadTables = true } = {}) {
             const dbSelect = document.getElementById('databaseSelect');
             if (!dbSelect) return;
 
@@ -5684,7 +5695,9 @@
                     }
                     renderSchemaDisplay();
                     renderSchemaDropdown();
-                    await loadDbTables();
+                    if (loadTables) {
+                        await loadDbTables();
+                    }
                 }
             } catch (error) {
                 console.error('加载 schema 失败:', error);
@@ -5696,16 +5709,18 @@
             if (!select) return;
 
             const schemas = getSelectedSchemas();
-            const url = `/api/db_tables?db_name=${encodeURIComponent(select.value)}`;
+            const params = new URLSearchParams({ db_name: select.value });
+            if (schemas.length > 0) {
+                params.set('schema_name', schemas.join(','));
+            }
+            const url = `/api/db_tables?${params.toString()}`;
 
             try {
                 const response = await fetch(url);
                 const data = await response.json();
                 if (response.ok && Array.isArray(data.tables)) {
                     matchTargetTables = data.tables;
-                    allTables = schemas.length > 0
-                        ? matchTargetTables.filter(table => schemas.includes(String(table.schema || '')))
-                        : matchTargetTables.slice();
+                    allTables = matchTargetTables.slice();
                     resetMatchTableCaches();
                 } else {
                     allTables = [];
@@ -5726,7 +5741,7 @@
             }
         }
 
-        async function loadUploadTemplates() {
+        async function loadUploadTemplates({ loadHistory = true } = {}) {
             const dbSelect = document.getElementById('databaseSelect');
             const templateSelect = document.getElementById('uploadTemplateSelect');
             const configSelect = document.getElementById('uploadConfigTemplateSelect');
@@ -5807,7 +5822,9 @@
 
                 populateUploadConfigEditor(configSelect.value);
                 renderMatchTemplateList();
-                await loadUploadTableHistory();
+                if (loadHistory) {
+                    await loadUploadTableHistory();
+                }
                 renderUploadTemplateMatchFields('');
                 refreshMatchWorkspaceSummary();
             } catch (error) {
