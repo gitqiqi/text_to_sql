@@ -30,8 +30,6 @@ elif not _model_path_config.startswith('/') and not _model_path_config.startswit
 else:
     SENTENCE_TRANSFORMER_MODEL = _model_path_config
 
-print(f"📦 向量模型路径: {SENTENCE_TRANSFORMER_MODEL}")
-
 # 向量嵌入方式选择：'local'（本地 SentenceTransformer）或 'api'（豆包 API）
 EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'local')
 # API 向量模型名（EMBEDDING_PROVIDER='api' 时生效）

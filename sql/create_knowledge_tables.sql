@@ -215,6 +215,8 @@ ALTER TABLE knowledge.upload_match_template ADD COLUMN IF NOT EXISTS updated_at 
 UPDATE knowledge.upload_match_template SET status = 'active' WHERE status IS NULL;
 UPDATE knowledge.upload_match_template SET is_enabled = TRUE WHERE is_enabled IS NULL;
 
+-- 当前上传匹配只使用显式业务模板 template_key；历史 default / 上传表名兜底不再参与运行时解析。
+
 -- 查询运行日志
 CREATE TABLE IF NOT EXISTS knowledge.query_log (
     id BIGSERIAL PRIMARY KEY,

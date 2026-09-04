@@ -1,5 +1,6 @@
 # core/upload_match_template_repo.py - 上传匹配模板的 knowledge 库持久化
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -9,6 +10,17 @@ from .db_manager import DatabasePoolManager
 
 
 _READY_DBS: set[str] = set()
+LEGACY_UPLOAD_TEMPLATE_KEYS = {'default', '__draft__'}
+
+
+def normalize_upload_template_label(value: str) -> str:
+    """模板显示名的归一化版本，用于去重判断。"""
+    return re.sub(r'\s+', ' ', str(value or '').strip()).lower()
+
+
+def is_current_upload_template_key(template_key: Any) -> bool:
+    key = str(template_key or '').strip()
+    return bool(key) and key.lower() not in LEGACY_UPLOAD_TEMPLATE_KEYS
 
 
 def _json_dumps(value) -> str:
@@ -54,6 +66,10 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     if text_value in ('0', 'false', 'f', 'no', 'n', 'off', 'disabled'):
         return False
     return default
+
+
+def is_upload_template_enabled(config: Dict) -> bool:
+    return _coerce_bool((config or {}).get('is_enabled'), True)
 
 
 def _format_timestamp(value: Any) -> str:
@@ -230,8 +246,8 @@ def load_upload_match_templates_config(db_name: str) -> Dict[str, Dict]:
                 FROM knowledge.upload_match_template
                 WHERE db_name = :db_name
                   AND COALESCE(status, 'active') <> 'delete'
+                  AND LOWER(template_key) NOT IN ('default', '__draft__')
                 ORDER BY
-                    CASE WHEN template_key = 'default' THEN 0 ELSE 1 END,
                     updated_at DESC NULLS LAST,
                     template_key
             """),
@@ -242,7 +258,7 @@ def load_upload_match_templates_config(db_name: str) -> Dict[str, Dict]:
     for row in rows:
         mapping = dict(row._mapping)
         template_key = str(mapping.get('template_key') or '').strip()
-        if not template_key:
+        if not is_current_upload_template_key(template_key):
             continue
         configs[template_key] = _row_to_template_config(mapping)
     return configs
@@ -251,27 +267,67 @@ def load_upload_match_templates_config(db_name: str) -> Dict[str, Dict]:
 def get_upload_match_config_from_db(
     db_name: str,
     template_key: Optional[str] = None,
-    source_table_name: Optional[str] = None,
 ) -> Dict:
-    """从数据库读取并合并默认配置、表级配置、模板配置。"""
+    """从数据库读取当前业务模板配置；只接受显式 template_key。"""
+    key = str(template_key or '').strip()
+    if not is_current_upload_template_key(key):
+        return {}
+
     db_config = load_upload_match_templates_config(db_name)
-    merged: Dict = {}
+    template_config = db_config.get(key)
+    if not isinstance(template_config, dict) or not is_upload_template_enabled(template_config):
+        return {}
+    return dict(template_config)
 
-    default_config = db_config.get('default')
-    if isinstance(default_config, dict):
-        merged.update(default_config)
 
-    if source_table_name and source_table_name != template_key:
-        source_config = db_config.get(source_table_name)
-        if isinstance(source_config, dict):
-            merged.update(source_config)
+def get_upload_match_templates(
+    db_name: str,
+    db_config: Optional[Dict] = None,
+    enabled_only: bool = True,
+) -> list[Dict]:
+    """获取该数据库下可供前端展示的当前业务模板列表。"""
+    db_config = db_config if isinstance(db_config, dict) else {}
+    template_items: list[tuple[str, Dict, str, str]] = []
+    label_counts: Dict[str, int] = {}
 
-    if template_key:
-        template_config = db_config.get(template_key)
-        if isinstance(template_config, dict):
-            merged.update(template_config)
+    for template_key, template_config in db_config.items():
+        if not is_current_upload_template_key(template_key) or not isinstance(template_config, dict):
+            continue
+        is_enabled = is_upload_template_enabled(template_config)
+        if enabled_only and not is_enabled:
+            continue
+        label = (template_config.get('label') or template_config.get('name') or template_key or '').strip()
+        normalized = normalize_upload_template_label(label)
+        if normalized:
+            label_counts[normalized] = label_counts.get(normalized, 0) + 1
+        template_items.append((template_key, template_config, label, normalized))
 
-    return merged
+    templates: list[Dict] = []
+    for template_key, template_config, label, normalized in template_items:
+        return_fields = template_config.get('return_fields') if isinstance(template_config.get('return_fields'), list) else []
+        enabled_count = 0
+        for row in return_fields:
+            if isinstance(row, dict) and row.get('enabled', True) is not False:
+                enabled_count += 1
+        duplicate_label = bool(normalized and label_counts.get(normalized, 0) > 1)
+        templates.append({
+            'template_key': template_key,
+            'label': label or template_key,
+            'label_display': f'{label}（{template_key}）' if duplicate_label and label else (label or template_key),
+            'description': template_config.get('description') or '',
+            'match_table': template_config.get('match_table') or '',
+            'match_field': template_config.get('match_field') or '',
+            'match_field_display': template_config.get('match_field_display') or template_config.get('match_field') or '',
+            'match_mode': template_config.get('match_mode') or 'exact',
+            'sql_text': template_config.get('sql_text') or '',
+            'created_by': template_config.get('created_by') or '',
+            'updated_by': template_config.get('updated_by') or '',
+            'created_at': template_config.get('created_at') or '',
+            'updated_at': template_config.get('updated_at') or '',
+            'return_count': enabled_count,
+            'is_enabled': is_enabled,
+        })
+    return templates
 
 
 def upsert_upload_match_template(
@@ -281,6 +337,8 @@ def upsert_upload_match_template(
     current_user: Optional[Dict] = None,
 ) -> None:
     config = dict(config or {})
+    if not is_current_upload_template_key(template_key):
+        raise ValueError('legacy upload match template key is not writable')
     actor = str(config.get('updated_by') or config.get('created_by') or _display_user(current_user)).strip() or 'system'
     user_name = (current_user or {}).get('user_name') or actor
     params = {
@@ -445,7 +503,7 @@ def load_upload_match_template_audit_map(db_name: str) -> Dict[str, Dict]:
     for row in rows:
         mapping = row._mapping
         template_key = str(mapping.get('template_key') or '').strip()
-        if not template_key:
+        if not is_current_upload_template_key(template_key):
             continue
         audit_map[template_key] = {
             'created_by': mapping.get('created_by') or mapping.get('created_by_user_name') or '',

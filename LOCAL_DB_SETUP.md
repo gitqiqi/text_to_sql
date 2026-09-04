@@ -1,131 +1,60 @@
-# 本地MySQL数据库设置指南
+# Text2SQL 数据库设置
 
-## 概述
-本系统现在支持将查询日志记录到本地MySQL数据库中，方便数据分析和系统监控。
+当前应用以 PostgreSQL/Hologres 作为主存储，应用元数据统一放在 `knowledge` schema。历史的本地 MySQL 日志库和 `query_logs` 表不再使用。
 
-## 环境变量配置
+## 环境变量
 
-在 `.env` 文件中添加以下配置：
+在 `.env` 中配置主库连接：
 
 ```bash
-# 本地MySQL数据库配置（用于日志记录）
-DB_LOCAL_HOST=localhost
-DB_LOCAL_PORT=3306
-DB_LOCAL_NAME=text_to_sql_logs
-DB_LOCAL_USER=root
-DB_LOCAL_PASSWORD=your_mysql_password_here
+DB_HOLOGRES_HOST=your-host
+DB_HOLOGRES_PORT=80
+DB_HOLOGRES_DATABASE=your-db
+DB_HOLOGRES_USER=your-user
+DB_HOLOGRES_PASSWORD=your-password
+DB_HOLOGRES_SSLMODE=prefer
 ```
 
-## 快速设置
+登录引导账号可选：
 
-### 1. 运行设置脚本
 ```bash
-python setup_local_db.py
+APP_ADMIN_PASSWORD=change-me
+# 或 APP_ADMIN_PASSWORD_HASH=...
 ```
 
-这个脚本会自动：
-- 创建数据库 `text_to_sql_logs`
-- 创建日志表 `query_logs`
-- 测试数据库连接
+## 建表
 
-### 2. 手动设置（如果自动设置失败）
+初始化或补齐应用表：
 
-#### 连接到MySQL
 ```bash
-mysql -u root -p
+psql "$DATABASE_URL" -f sql/create_knowledge_tables.sql
+psql "$DATABASE_URL" -f sql/create_table_embeddings.sql
+psql "$DATABASE_URL" -f sql/create_db_metadata.sql
 ```
 
-#### 创建数据库
-```sql
-CREATE DATABASE text_to_sql_logs CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE text_to_sql_logs;
-```
+主要表：
 
-#### 创建日志表
-```sql
-CREATE TABLE query_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_query TEXT NOT NULL COMMENT '用户输入的自然语言查询',
-    generated_sql TEXT COMMENT 'LLM生成的SQL语句',
-    db_name VARCHAR(50) COMMENT '查询的数据库名称',
-    prompt_content TEXT COMMENT '发送给LLM的prompt内容',
-    model_name VARCHAR(100) COMMENT '使用的LLM模型名称',
-    response_time_ms INT COMMENT '响应时长(毫秒)',
-    token_count INT COMMENT '消耗的token数量',
-    result_count INT COMMENT '查询结果行数',
-    status ENUM('success', 'error') DEFAULT 'success' COMMENT '查询状态',
-    error_message TEXT COMMENT '错误信息',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户查询日志表';
-```
+- `knowledge.app_user`：登录用户与权限资料
+- `knowledge.db_knowledge`：SQL 知识库
+- `knowledge.business_glossary`：业务名词
+- `knowledge.book_code_knowledge`：代码知识索引
+- `knowledge.upload_match_template`：上传匹配业务模板
+- `knowledge.query_log`：自然语言查询和上传匹配日志
+- `knowledge.table_embeddings`：表结构向量
+- `knowledge.db_metadata`：表结构 fingerprint
 
-## 测试连接
+## 上传匹配模板
 
-运行测试脚本验证设置：
+上传匹配模板存放在 `knowledge.upload_match_template`，当前运行时只读取显式业务模板 key。
+
+仓库当前没有独立的上传匹配迁移脚本或 seed 导入脚本；历史 `default`、`__draft__` 和按上传表名兜底的配置不会再被前端展示或后端合并使用。
+
+## 账号同步
+
+如需从业务源表导入用户资料，可执行：
+
 ```bash
-python test_logging.py
+psql "$DATABASE_URL" -f sql/sync_app_user_from_admin_info.sql
 ```
 
-## 日志表字段说明
-
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
-| id | INT | 自增主键 |
-| user_query | TEXT | 用户输入的自然语言查询 |
-| generated_sql | TEXT | LLM生成的SQL语句 |
-| db_name | VARCHAR(50) | 查询的数据库名称 |
-| library_name | VARCHAR(100) | 用户使用的库名称 |
-| prompt_content | TEXT | 发送给LLM的prompt内容 |
-| model_name | VARCHAR(100) | 使用的LLM模型名称 |
-| response_time_ms | INT | 响应时长(毫秒) |
-| token_count | INT | 消耗的token数量 |
-| result_count | INT | 查询结果行数 |
-| status | ENUM | 查询状态(success/error) |
-| error_message | TEXT | 错误信息 |
-| created_at | TIMESTAMP | 创建时间 |
-
-## 常见问题
-
-### 1. 连接失败
-- 检查MySQL服务是否正在运行
-- 验证用户名和密码是否正确
-- 确认用户有创建数据库的权限
-
-### 2. 权限问题
-```sql
--- 为用户授予权限
-GRANT ALL PRIVILEGES ON text_to_sql_logs.* TO 'your_user'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-### 3. 字符集问题
-确保数据库和表使用 `utf8mb4` 字符集以支持中文字符。
-
-## 查询示例
-
-### 查看最近的查询
-```sql
-SELECT * FROM query_logs ORDER BY created_at DESC LIMIT 10;
-```
-
-### 统计查询成功率
-```sql
-SELECT 
-    status,
-    COUNT(*) as count,
-    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM query_logs), 2) as percentage
-FROM query_logs 
-GROUP BY status;
-```
-
-### 分析响应时间
-```sql
-SELECT 
-    AVG(response_time_ms) as avg_response_time,
-    MAX(response_time_ms) as max_response_time,
-    MIN(response_time_ms) as min_response_time
-FROM query_logs 
-WHERE status = 'success';
-```
-
-作者: Jamesenh 
+默认源表为 `bi.dim_org_admin_user_info_hf`。如果源字段不同，先按实际库表调整 SQL。

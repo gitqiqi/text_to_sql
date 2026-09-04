@@ -1,7 +1,6 @@
 # config.py - 精简版
 import json
 import os
-import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -50,20 +49,6 @@ def clear_knowledge_file_override(db_name: str) -> None:
 def get_knowledge_override(db_name: str) -> Optional[Dict]:
     """获取知识库覆盖配置"""
     return _load_kb_meta().get(db_name)
-
-
-def normalize_upload_template_label(value: str) -> str:
-    """模板显示名的归一化版本，用于去重判断。"""
-    return re.sub(r'\s+', ' ', str(value or '').strip()).lower()
-
-
-def _is_upload_template_enabled(config: Dict) -> bool:
-    value = (config or {}).get('is_enabled', True)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return str(value).strip().lower() not in {'0', 'false', 'f', 'no', 'n', 'off', 'disabled'}
 
 
 # ==================== 数据库配置（仅保留PostgreSQL和SQLite） ====================
@@ -132,53 +117,3 @@ def get_knowledge_base_config(db_name: str) -> Dict:
         }
 
     return default_config
-
-
-def get_upload_match_templates(
-    db_name: str,
-    db_config: Optional[Dict] = None,
-    enabled_only: bool = True,
-) -> List[Dict]:
-    """获取该数据库下可供前端展示的模板列表"""
-    db_config = db_config if isinstance(db_config, dict) else {}
-    template_items: List[tuple[str, Dict, str, str]] = []
-    label_counts: Dict[str, int] = {}
-
-    for template_key, template_config in db_config.items():
-        if template_key == 'default' or not isinstance(template_config, dict):
-            continue
-        is_enabled = _is_upload_template_enabled(template_config)
-        if enabled_only and not is_enabled:
-            continue
-        label = (template_config.get('label') or template_config.get('name') or template_key or '').strip()
-        normalized = normalize_upload_template_label(label)
-        if normalized:
-            label_counts[normalized] = label_counts.get(normalized, 0) + 1
-        template_items.append((template_key, template_config, label, normalized))
-
-    templates: List[Dict] = []
-    for template_key, template_config, label, normalized in template_items:
-        return_fields = template_config.get('return_fields') if isinstance(template_config.get('return_fields'), list) else []
-        enabled_count = 0
-        for row in return_fields:
-            if isinstance(row, dict) and row.get('enabled', True) is not False:
-                enabled_count += 1
-        duplicate_label = bool(normalized and label_counts.get(normalized, 0) > 1)
-        templates.append({
-            'template_key': template_key,
-            'label': label or template_key,
-            'label_display': f'{label}（{template_key}）' if duplicate_label and label else (label or template_key),
-            'description': template_config.get('description') or '',
-            'match_table': template_config.get('match_table') or '',
-            'match_field': template_config.get('match_field') or '',
-            'match_field_display': template_config.get('match_field_display') or template_config.get('match_field') or '',
-            'match_mode': template_config.get('match_mode') or 'exact',
-            'sql_text': template_config.get('sql_text') or '',
-            'created_by': template_config.get('created_by') or '',
-            'updated_by': template_config.get('updated_by') or '',
-            'created_at': template_config.get('created_at') or '',
-            'updated_at': template_config.get('updated_at') or '',
-            'return_count': enabled_count,
-            'is_enabled': is_enabled,
-        })
-    return templates

@@ -1,4 +1,4 @@
-# core 包：拆分自原 app_core.py
+# core package public exports
 from .utils import (
     SENTENCE_TRANSFORMER_MODEL,
     EMBEDDING_PROVIDER,

@@ -3653,6 +3653,10 @@
 
         let allTables = [];
         let matchTargetTables = [];
+        let matchTargetTablesCacheKey = '';
+        let matchTargetTablesLoadingKey = '';
+        let matchTargetTablesLoadingPromise = null;
+        let matchTargetTableColumnPromises = new Map();
         let selectedTable = null;
         let searchTimeout = null;
         let currentKnowledgeCount = 0;
@@ -3681,10 +3685,30 @@
         let matchTableLookupCache = null;
         const FIELD_PICKER_OPTION_LIMIT = 120;
         const UPLOAD_NEW_TABLE_VALUE = '__upload_new_table__';
+        const LEGACY_UPLOAD_TEMPLATE_KEYS = new Set(['default', '__draft__']);
 
         function getSelectedOptionText(select) {
             if (!select || select.selectedIndex < 0) return '';
             return select.options[select.selectedIndex]?.textContent?.trim() || '';
+        }
+
+        function isCurrentUploadTemplateKey(value = '') {
+            const key = String(value || '').trim();
+            return Boolean(key) && !LEGACY_UPLOAD_TEMPLATE_KEYS.has(key.toLowerCase());
+        }
+
+        function sanitizeUploadMatchConfigs(configs = {}) {
+            const nextConfigs = {};
+            Object.keys(configs || {}).forEach(key => {
+                if (isCurrentUploadTemplateKey(key) && configs[key] && typeof configs[key] === 'object') {
+                    nextConfigs[key] = configs[key];
+                }
+            });
+            return nextConfigs;
+        }
+
+        function sanitizeUploadTemplates(items = []) {
+            return (Array.isArray(items) ? items : []).filter(item => isCurrentUploadTemplateKey(item?.template_key));
         }
 
         function getTemplateLabelValue(config = {}, fallbackKey = '') {
@@ -3859,6 +3883,73 @@
             matchTableLookupCache = null;
         }
 
+        function getMatchTargetTablesCacheKey() {
+            const dbName = getActiveDbName();
+            if (!dbName) return '';
+            return `${dbName}::${getSelectedSchemas().slice().sort().join(',')}`;
+        }
+
+        function clearMatchTargetTablesCache({ refreshUi = true } = {}) {
+            allTables = [];
+            matchTargetTables = [];
+            matchTargetTablesCacheKey = '';
+            matchTargetTablesLoadingKey = '';
+            matchTargetTablesLoadingPromise = null;
+            matchTargetTableColumnPromises = new Map();
+            resetMatchTableCaches();
+            if (!refreshUi) return;
+            renderMatchCanvasSuggestions();
+            refreshUploadConfigFieldSuggestions();
+            renderUploadTemplateMatchFields(document.getElementById('uploadTemplateMatchField')?.value || '');
+        }
+
+        function hasLoadedMatchTargetTables() {
+            const cacheKey = getMatchTargetTablesCacheKey();
+            return Boolean(cacheKey && matchTargetTablesCacheKey === cacheKey);
+        }
+
+        async function ensureMatchTargetTablesLoaded({ force = false } = {}) {
+            const cacheKey = getMatchTargetTablesCacheKey();
+            if (!cacheKey) return [];
+            if (!force && hasLoadedMatchTargetTables()) return matchTargetTables;
+            if (!force && matchTargetTablesLoadingPromise && matchTargetTablesLoadingKey === cacheKey) {
+                return matchTargetTablesLoadingPromise;
+            }
+
+            matchTargetTablesLoadingKey = cacheKey;
+            const request = loadDbTables({ cacheKey });
+            matchTargetTablesLoadingPromise = request;
+            request.finally(() => {
+                if (matchTargetTablesLoadingPromise === request) {
+                    matchTargetTablesLoadingPromise = null;
+                    matchTargetTablesLoadingKey = '';
+                }
+            });
+            return request;
+        }
+
+        function refreshMatchTargetDependentControls() {
+            renderMatchCanvasSuggestions(document.getElementById('matchCanvasMatchTable')?.value || '');
+            refreshUploadConfigFieldSuggestions();
+            renderUploadTemplateMatchFields(document.getElementById('uploadTemplateMatchField')?.value || '');
+            if (selectedTable && tableSearchInput) searchTables(tableSearchInput.value || selectedTable);
+        }
+
+        async function ensureActiveMatchTargetTableColumnsLoaded({ clearCurrent = false } = {}) {
+            const tableInput = document.getElementById('matchCanvasMatchTable');
+            const rawTable = tableInput?.value || getActiveTemplateConfig().match_table || '';
+            const canonicalTable = getCanonicalTableValue(rawTable);
+            if (!canonicalTable) return [];
+            if (tableInput) {
+                tableInput.value = canonicalTable;
+                tableInput.dataset.lastExactTable = canonicalTable;
+            }
+            const columns = await ensureMatchTargetTableColumnsLoaded(canonicalTable);
+            renderMatchCanvasSuggestions(canonicalTable);
+            refreshMatchCanvasTargetFieldSelects(canonicalTable, clearCurrent);
+            return columns;
+        }
+
         function getMatchTableSource() {
             return matchTargetTables.length > 0 ? matchTargetTables : allTables;
         }
@@ -3875,12 +3966,94 @@
                 ].filter(Boolean).forEach(key => {
                     const normalized = String(key || '').trim().toLowerCase();
                     if (!lookup.has(normalized)) {
-                        lookup.set(normalized, { fullName, columns });
+                        lookup.set(normalized, { fullName, columns, table });
                     }
                 });
             });
             matchTableLookupCache = lookup;
             return lookup;
+        }
+
+        function getMatchTargetTableEntry(tableName = '') {
+            const raw = String(tableName || '').trim();
+            if (!raw) return null;
+            const canonical = getCanonicalTableValue(raw);
+            const variants = new Set([raw.toLowerCase(), canonical.toLowerCase()].filter(Boolean));
+            return getMatchTableSource().find(table => {
+                const fullName = getFullTableName(table).toLowerCase();
+                const bareName = String(table.table_name || '').trim().toLowerCase();
+                return variants.has(fullName) || variants.has(bareName);
+            }) || null;
+        }
+
+        async function ensureMatchTargetTableColumnsLoaded(tableName = '', { force = false } = {}) {
+            if (!hasLoadedMatchTargetTables()) {
+                await ensureMatchTargetTablesLoaded();
+            }
+
+            const canonical = getCanonicalTableValue(tableName);
+            if (!canonical) return [];
+            let entry = getMatchTargetTableEntry(canonical);
+            let createdPlaceholder = false;
+            if (!entry && canonical.includes('.')) {
+                const [schema, table] = canonical.split('.', 2);
+                entry = {
+                    schema,
+                    table_name: table,
+                    columns: [],
+                    column_count: 0,
+                    columns_loaded: false,
+                };
+                matchTargetTables.push(entry);
+                allTables = matchTargetTables.slice();
+                resetMatchTableCaches();
+                createdPlaceholder = true;
+            }
+            if (!entry) return [];
+
+            const currentColumns = Array.isArray(entry.columns) ? entry.columns : [];
+            if (!force && (entry.columns_loaded || currentColumns.length > 0)) {
+                return currentColumns;
+            }
+
+            const dbName = getActiveDbName();
+            if (!dbName) return [];
+            const cacheKey = `${getMatchTargetTablesCacheKey()}::${canonical.toLowerCase()}`;
+            if (!force && matchTargetTableColumnPromises.has(cacheKey)) {
+                return matchTargetTableColumnPromises.get(cacheKey);
+            }
+
+            const request = (async () => {
+                try {
+                    const response = await fetch(`/api/upload_table_columns?db_name=${encodeURIComponent(dbName)}&table_name=${encodeURIComponent(canonical)}`);
+                    const data = await response.json();
+                    if (!response.ok || !Array.isArray(data.columns)) {
+                        if (createdPlaceholder) {
+                            matchTargetTables = matchTargetTables.filter(table => table !== entry);
+                            allTables = matchTargetTables.slice();
+                            resetMatchTableCaches();
+                        }
+                        return [];
+                    }
+                    entry.columns = data.columns;
+                    entry.column_count = data.columns.length;
+                    entry.columns_loaded = true;
+                    resetMatchTableCaches();
+                    refreshMatchTargetDependentControls();
+                    return entry.columns;
+                } catch (error) {
+                    console.error('加载目标表字段失败:', error);
+                    return [];
+                }
+            })();
+
+            matchTargetTableColumnPromises.set(cacheKey, request);
+            request.finally(() => {
+                if (matchTargetTableColumnPromises.get(cacheKey) === request) {
+                    matchTargetTableColumnPromises.delete(cacheKey);
+                }
+            });
+            return request;
         }
 
         function renderCanvasSelectOptions(values = [], selectedValue = '', placeholder = '请选择') {
@@ -3939,7 +4112,7 @@
 
         function upsertUploadMatchConfigSnapshot(templateKey = '', config = {}) {
             const key = String(templateKey || '').trim();
-            if (!key || !config || typeof config !== 'object') return;
+            if ((!isCurrentUploadTemplateKey(key) && key !== '__draft__') || !config || typeof config !== 'object') return;
             uploadMatchConfigs[key] = {
                 ...(uploadMatchConfigs[key] || {}),
                 ...config,
@@ -3950,10 +4123,10 @@
             const orderedKeys = [];
             (uploadTemplates || []).forEach(item => {
                 const key = String(item.template_key || '').trim();
-                if (key && !orderedKeys.includes(key)) orderedKeys.push(key);
+                if (isCurrentUploadTemplateKey(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
             });
             Object.keys(uploadMatchConfigs || {}).forEach(key => {
-                if (key && key !== '__draft__' && !orderedKeys.includes(key)) orderedKeys.push(key);
+                if (isCurrentUploadTemplateKey(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
             });
             const labelCounts = new Map();
             orderedKeys.forEach(key => {
@@ -4151,6 +4324,7 @@
             canvasEditingTemplateKey = '';
             syncMatchWorkspaceMode();
             switchMainView('match');
+            ensureMatchTargetTablesLoaded().then(refreshMatchTargetDependentControls);
         }
 
         function setCanvasEditMode(enabled, templateKey = '') {
@@ -4162,6 +4336,15 @@
             }
             syncMatchWorkspaceMode();
             refreshMatchWorkspaceSummary(true);
+            if (uploadCanvasEditMode) {
+                ensureMatchTargetTablesLoaded().then(async () => {
+                    if (!uploadCanvasEditMode) return;
+                    refreshMatchTargetDependentControls();
+                    await ensureActiveMatchTargetTableColumnsLoaded();
+                    if (!uploadCanvasEditMode) return;
+                    refreshMatchWorkspaceSummary(true);
+                });
+            }
         }
 
         function closeTemplateConfigMode() {
@@ -4202,8 +4385,8 @@
                 if (!response.ok) {
                     throw new Error(data.error || '更新启用状态失败');
                 }
-                uploadMatchConfigs = data.db_config || uploadMatchConfigs;
-                uploadTemplates = Array.isArray(data.templates) ? data.templates : uploadTemplates;
+                uploadMatchConfigs = sanitizeUploadMatchConfigs(data.db_config || uploadMatchConfigs);
+                uploadTemplates = sanitizeUploadTemplates(data.templates || uploadTemplates);
                 await loadUploadTemplates();
             } catch (error) {
                 if (input) {
@@ -4805,6 +4988,11 @@
                         const row = input.closest('.match-canvas-field-row');
                         if (row) row.dataset.dbField = input.value.trim();
                     });
+                    input.addEventListener('focus', () => {
+                        ensureActiveMatchTargetTableColumnsLoaded().then(() => {
+                            renderFieldPickerOptions('matchCanvasTargetFieldSuggestions', getUploadConfigTargetColumns(document.getElementById('matchCanvasMatchTable')?.value || currentTable), input.value, input.value);
+                        });
+                    });
                 });
                 wrap.querySelectorAll('.match-canvas-business-field').forEach(input => {
                     input.addEventListener('input', () => {
@@ -5022,10 +5210,13 @@
         }
 
         function onSchemaChange() {
-            loadDbTables();
+            clearMatchTargetTablesCache();
             selectedTable = null;
             selectedTableInfo?.classList.remove('show');
             if (tableSearchInput) tableSearchInput.value = '';
+            if (matchTemplateListMode || uploadCanvasEditMode) {
+                ensureMatchTargetTablesLoaded().then(refreshMatchTargetDependentControls);
+            }
         }
 
         function setUploadOperationStatus(className, message) {
@@ -5261,8 +5452,19 @@
             closeUploadConfigModal();
         });
 
-        document.getElementById('uploadConfigMatchTable').addEventListener('input', () => {
+        const uploadConfigMatchTableInput = document.getElementById('uploadConfigMatchTable');
+        const loadUploadConfigTargetColumns = async () => {
+            const tableName = uploadConfigMatchTableInput?.value || '';
+            await ensureMatchTargetTablesLoaded();
+            await ensureMatchTargetTableColumnsLoaded(tableName);
             refreshUploadConfigFieldSuggestions();
+        };
+        uploadConfigMatchTableInput?.addEventListener('focus', () => {
+            ensureMatchTargetTablesLoaded().then(refreshUploadConfigFieldSuggestions);
+        });
+        uploadConfigMatchTableInput?.addEventListener('input', () => {
+            refreshUploadConfigFieldSuggestions();
+            loadUploadConfigTargetColumns();
         });
 
         bindFieldPickerInput(
@@ -5509,9 +5711,9 @@
                 <div class="suggestion-item" data-table-name="${table.table_name}" data-schema="${table.schema || ''}" data-columns='${JSON.stringify(table.columns || [])}'>
                     <div>
                         <span class="suggestion-table-name">${escapeHtml(table.schema ? `${table.schema}.${table.table_name}` : table.table_name)}</span>
-                        <span class="suggestion-schema" style="margin-left: 8px; font-size: 11px; color: #999;">${table.column_count || 0}个字段</span>
+                        <span class="suggestion-schema" style="margin-left: 8px; font-size: 11px; color: #999;">${table.columns_loaded ? `${table.column_count || 0}个字段` : '字段按需加载'}</span>
                     </div>
-                    <div class="suggestion-columns" style="font-size: 11px; color: #666; margin-top: 4px;">${escapeHtml((table.columns || []).slice(0, 5).join(', '))}${(table.columns || []).length > 5 ? '...' : ''}</div>
+                    ${table.columns_loaded ? `<div class="suggestion-columns" style="font-size: 11px; color: #666; margin-top: 4px;">${escapeHtml((table.columns || []).slice(0, 5).join(', '))}${(table.columns || []).length > 5 ? '...' : ''}</div>` : ''}
                 </div>
             `).join('');
 
@@ -5530,10 +5732,24 @@
             tableSuggestions.classList.add('show');
         }
 
+        async function searchTablesWhenReady(keyword) {
+            const query = String(keyword || '').trim();
+            if (!query) {
+                tableSuggestions.classList.remove('show');
+                return;
+            }
+            if (!hasLoadedMatchTargetTables()) {
+                tableSuggestions.innerHTML = '<div class="suggestion-item" style="color: #999;">正在加载目标表...</div>';
+                tableSuggestions.classList.add('show');
+                await ensureMatchTargetTablesLoaded();
+            }
+            searchTables(query);
+        }
+
         tableSearchInput.addEventListener('input', (e) => {
             if (searchTimeout) clearTimeout(searchTimeout);
             searchTimeout = setTimeout(() => {
-                searchTables(e.target.value);
+                searchTablesWhenReady(e.target.value);
             }, 300);
         });
 
@@ -5669,12 +5885,12 @@
             selectedTable = null;
             selectedTableInfo?.classList.remove('show');
             if (tableSearchInput) tableSearchInput.value = '';
+            clearMatchTargetTablesCache();
 
             await loadSchemas({ loadTables: false });
             await Promise.allSettled([
                 loadUploadTemplates({ loadHistory: false }),
                 loadUploadTableHistory(),
-                loadDbTables(),
                 loadQueryHistory(),
             ]);
         }
@@ -5695,8 +5911,9 @@
                     }
                     renderSchemaDisplay();
                     renderSchemaDropdown();
+                    clearMatchTargetTablesCache();
                     if (loadTables) {
-                        await loadDbTables();
+                        await ensureMatchTargetTablesLoaded({ force: true });
                     }
                 }
             } catch (error) {
@@ -5704,40 +5921,52 @@
             }
         }
 
-        async function loadDbTables() {
+        async function loadDbTables({ cacheKey = getMatchTargetTablesCacheKey() } = {}) {
             const select = document.getElementById('databaseSelect');
-            if (!select) return;
+            if (!select) return [];
 
             const schemas = getSelectedSchemas();
             const params = new URLSearchParams({ db_name: select.value });
             if (schemas.length > 0) {
                 params.set('schema_name', schemas.join(','));
             }
+            params.set('include_columns', '0');
             const url = `/api/db_tables?${params.toString()}`;
 
             try {
                 const response = await fetch(url);
                 const data = await response.json();
+                if (cacheKey && cacheKey !== getMatchTargetTablesCacheKey()) {
+                    return matchTargetTables;
+                }
                 if (response.ok && Array.isArray(data.tables)) {
-                    matchTargetTables = data.tables;
+                    matchTargetTables = data.tables.map(table => ({
+                        ...table,
+                        columns: Array.isArray(table.columns) ? table.columns : [],
+                        column_count: Number(table.column_count || 0),
+                        columns_loaded: Boolean(table.columns_loaded),
+                    }));
                     allTables = matchTargetTables.slice();
+                    matchTargetTablesCacheKey = cacheKey;
                     resetMatchTableCaches();
                 } else {
                     allTables = [];
                     matchTargetTables = [];
+                    matchTargetTablesCacheKey = '';
                     resetMatchTableCaches();
                 }
-                renderMatchCanvasSuggestions();
-                refreshUploadConfigFieldSuggestions();
-                renderUploadTemplateMatchFields(document.getElementById('uploadTemplateMatchField')?.value || '');
+                refreshMatchTargetDependentControls();
+                return matchTargetTables;
             } catch (error) {
                 console.error('加载表失败:', error);
-                allTables = [];
-                matchTargetTables = [];
-                resetMatchTableCaches();
-                renderMatchCanvasSuggestions();
-                refreshUploadConfigFieldSuggestions();
-                renderUploadTemplateMatchFields();
+                if (!cacheKey || cacheKey === getMatchTargetTablesCacheKey()) {
+                    allTables = [];
+                    matchTargetTables = [];
+                    matchTargetTablesCacheKey = '';
+                    resetMatchTableCaches();
+                    refreshMatchTargetDependentControls();
+                }
+                return [];
             }
         }
 
@@ -5780,8 +6009,8 @@
                     throw new Error(data.error || '加载模板失败');
                 }
 
-                uploadMatchConfigs = data.db_config || {};
-                uploadTemplates = Array.isArray(data.templates) ? data.templates : [];
+                uploadMatchConfigs = sanitizeUploadMatchConfigs(data.db_config || {});
+                uploadTemplates = sanitizeUploadTemplates(data.templates || []);
 
                 if (uploadTemplates.length > 0) {
                     const previousTemplateValue = templateSelect.value;
@@ -5803,7 +6032,7 @@
                 }
 
                 const previousConfigValue = configSelect.value;
-                const configKeys = Object.keys(uploadMatchConfigs || {}).filter(key => key && key !== '__draft__');
+                const configKeys = Object.keys(uploadMatchConfigs || {}).filter(isCurrentUploadTemplateKey);
                 configSelect.innerHTML = ['<option value="">新建模板</option>']
                     .concat(configKeys.map(key => {
                         const config = uploadMatchConfigs[key] || {};
@@ -5815,7 +6044,7 @@
                 if (previousConfigValue && configKeys.includes(previousConfigValue)) {
                     configSelect.value = previousConfigValue;
                 } else if (configKeys.length > 0) {
-                    configSelect.value = configKeys.find(key => key !== 'default') || configKeys[0];
+                    configSelect.value = configKeys[0];
                 } else {
                     configSelect.value = '';
                 }
@@ -5830,18 +6059,11 @@
             } catch (error) {
                 uploadTemplates = [];
                 uploadMatchConfigs = {};
-                uploadHistoryTables = [];
                 templateSelect.innerHTML = renderHiddenBlankOption();
                 templateSelect.disabled = false;
                 configSelect.innerHTML = '<option value="">新建模板</option>';
                 configSelect.disabled = false;
-                const sourceSelect = document.getElementById('uploadSourceTableSelect');
-                const historyList = document.getElementById('uploadHistoryList');
-                if (sourceSelect) sourceSelect.innerHTML = '<option value="">暂无目标表</option>';
-                if (historyList) historyList.innerHTML = '<div class="history-empty">加载匹配历史失败</div>';
-                renderUploadKeywordColumns([]);
                 renderUploadTemplateMatchFields();
-                renderUploadMatchHistoryList([], '');
                 populateUploadConfigEditor('');
                 renderMatchTemplateList();
                 refreshMatchWorkspaceSummary();
@@ -6215,6 +6437,11 @@
             menu?.classList.add('hidden');
             renderMatchCanvasSuggestions(canonical);
             refreshMatchCanvasTargetFieldSelects(canonical, true);
+            ensureMatchTargetTableColumnsLoaded(canonical).then(() => {
+                if (getCanonicalTableValue(input.value) !== canonical) return;
+                renderMatchCanvasSuggestions(canonical);
+                refreshMatchCanvasTargetFieldSelects(canonical, true);
+            });
         }
 
         function refreshMatchCanvasTargetFieldSelects(matchTable = '', clearCurrent = false) {
@@ -6247,17 +6474,36 @@
             if (tableInput) {
                 tableInput.dataset.lastExactTable = getCanonicalTableValue(tableInput.value);
             }
+            const openTablePickerWhenReady = async (query = '') => {
+                if (!tableInput) return;
+                if (!hasLoadedMatchTargetTables()) {
+                    if (tableMenu) {
+                        tableMenu.innerHTML = '<div class="match-table-picker-empty">正在加载目标表...</div>';
+                        tableMenu.classList.remove('hidden');
+                    }
+                    await ensureMatchTargetTablesLoaded();
+                }
+                renderMatchTablePickerMenu(tableInput.value || query, true);
+            };
             tableInput?.addEventListener('input', () => {
                 const nextTable = getCanonicalTableValue(tableInput.value);
                 const lastTable = tableInput.dataset.lastExactTable || '';
-                renderMatchTablePickerMenu(tableInput.value, true);
-                if (nextTable && nextTable !== lastTable && getUploadConfigTargetColumns(nextTable).length > 0) {
+                if (hasLoadedMatchTargetTables()) {
+                    renderMatchTablePickerMenu(tableInput.value, true);
+                } else {
+                    openTablePickerWhenReady(tableInput.value);
+                }
+                if (nextTable && nextTable !== lastTable && getMatchTargetTableEntry(nextTable)) {
                     tableInput.dataset.lastExactTable = nextTable;
                     refreshMatchCanvasTargetFieldSelects(nextTable, true);
+                    ensureMatchTargetTableColumnsLoaded(nextTable).then(() => {
+                        if (getCanonicalTableValue(tableInput.value) !== nextTable) return;
+                        refreshMatchCanvasTargetFieldSelects(nextTable, true);
+                    });
                 }
             });
-            tableInput?.addEventListener('focus', () => renderMatchTablePickerMenu('', true));
-            tableInput?.addEventListener('click', () => renderMatchTablePickerMenu('', true));
+            tableInput?.addEventListener('focus', () => openTablePickerWhenReady(''));
+            tableInput?.addEventListener('click', () => openTablePickerWhenReady(''));
             tableInput?.addEventListener('keydown', event => {
                 if (event.key === 'Escape') tableMenu?.classList.add('hidden');
                 if (event.key === 'Enter') {
@@ -6274,6 +6520,11 @@
                 tableInput.dataset.lastExactTable = nextTable;
                 renderMatchCanvasSuggestions(nextTable);
                 refreshMatchCanvasTargetFieldSelects(nextTable, true);
+                ensureMatchTargetTableColumnsLoaded(nextTable).then(() => {
+                    if (getCanonicalTableValue(tableInput.value) !== nextTable) return;
+                    renderMatchCanvasSuggestions(nextTable);
+                    refreshMatchCanvasTargetFieldSelects(nextTable, true);
+                });
             });
             if (matchTablePickerOutsideHandler) {
                 document.removeEventListener('mousedown', matchTablePickerOutsideHandler);
@@ -6372,6 +6623,9 @@
                     () => getUploadConfigTargetColumns(document.getElementById('uploadConfigMatchTable')?.value || ''),
                     'uploadConfigFieldSuggestions',
                 );
+                input.addEventListener('focus', () => {
+                    loadUploadConfigTargetColumns();
+                });
             });
 
             wrap.querySelectorAll('.field-mapping-remove').forEach(removeBtn => {
@@ -6627,7 +6881,7 @@
                     await loadUploadMatchHistory();
 
                     if (nextValue) {
-                        await loadUploadSourceTableColumns(nextValue, data.tables);
+                        await loadUploadSourceTableColumns(nextValue);
                     } else {
                         renderUploadKeywordColumns([]);
                     }
@@ -6653,7 +6907,7 @@
             }
         }
 
-        async function loadUploadSourceTableColumns(tableName = '', historyItems = uploadHistoryTables) {
+        async function loadUploadSourceTableColumns(tableName = '') {
             const dbSelect = document.getElementById('databaseSelect');
             const sourceSelect = document.getElementById('uploadSourceTableSelect');
             if (!dbSelect || !sourceSelect) return;

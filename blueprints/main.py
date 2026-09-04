@@ -15,11 +15,7 @@ import pandas as pd
 from sqlalchemy import bindparam, text
 from werkzeug.utils import secure_filename
 from . import main_bp
-from config import (
-    get_available_databases,
-    get_upload_match_templates,
-    normalize_upload_template_label,
-)
+from config import get_available_databases
 from core import (
     DatabaseManager, KnowledgeBase, SQLKnowledgeRepo, TextToSQLConverter,
     clean_sql, validate_sql_safety, monitor_function, _nl_query_limiter,
@@ -37,7 +33,10 @@ from core.db_manager import DatabasePoolManager
 from core.upload_match_template_repo import (
     delete_upload_match_template_record,
     get_upload_match_config_from_db,
+    get_upload_match_templates,
+    is_current_upload_template_key,
     load_upload_match_templates_config,
+    normalize_upload_template_label,
     update_upload_match_template_enabled,
     upsert_upload_match_template,
 )
@@ -588,7 +587,6 @@ def _get_cached_upload_tables(db_name: str, limit: int) -> list[dict]:
         parsed = _parse_upload_table_name(table_name)
         if not parsed:
             continue
-        columns = table.get('columns') or []
         history.append({
             'schema': 'tmp',
             'table_name': parsed['table_name'],
@@ -596,8 +594,8 @@ def _get_cached_upload_tables(db_name: str, limit: int) -> list[dict]:
             'base_name': parsed['base_name'],
             'timestamp': parsed['timestamp'],
             'legacy_suffix': parsed['legacy_suffix'],
-            'column_count': len(columns),
-            'columns': columns,
+            'column_count': 0,
+            'columns': [],
             'sort_key': parsed['sort_key'],
         })
 
@@ -635,35 +633,7 @@ def _get_live_upload_tables(db_name: str, limit: int) -> list[dict]:
         })
 
     history.sort(key=lambda item: (item['sort_key'], item['table_name']), reverse=True)
-    history = history[:limit]
-    if not history:
-        return []
-
-    grouped = {entry['table_name']: entry for entry in history}
-    column_query = text("""
-        SELECT table_name, column_name, ordinal_position
-        FROM information_schema.columns
-        WHERE table_schema = 'tmp'
-          AND table_name IN :table_names
-        ORDER BY table_name, ordinal_position
-    """).bindparams(bindparam('table_names', expanding=True))
-
-    with engine.connect() as conn:
-        rows = conn.execute(column_query, {'table_names': list(grouped)}).fetchall()
-
-    for row in rows:
-        mapping = row._mapping
-        table_name = str(mapping.get('table_name') or '').strip()
-        entry = grouped.get(table_name)
-        if not entry:
-            continue
-        column_name = mapping.get('column_name')
-        if column_name:
-            entry['columns'].append(str(column_name))
-
-    for entry in history:
-        entry['column_count'] = len(entry['columns'])
-    return history
+    return history[:limit]
 
 
 def _get_live_database_schemas(db_name: str) -> list[str]:
@@ -679,10 +649,50 @@ def _get_live_database_schemas(db_name: str) -> list[str]:
     return [str(row._mapping.get('table_schema') or '').strip() for row in rows if row._mapping.get('table_schema')]
 
 
-def _get_live_database_tables(db_name: str, schema_names: list[str] | None = None) -> list[dict]:
+def _get_live_database_tables(
+    db_name: str,
+    schema_names: list[str] | None = None,
+    include_columns: bool = True,
+) -> list[dict]:
     """从数据库实时读取可访问的表和字段，补齐知识库尚未同步的表。"""
     schemas = [str(schema or '').strip() for schema in (schema_names or []) if str(schema or '').strip()]
     schema_clause = "AND table_schema IN :schema_names" if schemas else ""
+
+    if not include_columns:
+        query = text(f"""
+            SELECT table_schema, table_name
+            FROM information_schema.tables
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'knowledge', 'hg_recyclebin')
+              AND table_schema NOT LIKE 'pg_%'
+              AND table_name NOT LIKE '%_middle%'
+              {schema_clause}
+            ORDER BY table_schema, table_name
+        """)
+        params = {}
+        if schemas:
+            query = query.bindparams(bindparam('schema_names', expanding=True))
+            params['schema_names'] = schemas
+
+        engine = DatabasePoolManager.get_engine(db_name)
+        with engine.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        tables = []
+        for row in rows:
+            mapping = row._mapping
+            schema = str(mapping.get('table_schema') or '').strip()
+            table_name = str(mapping.get('table_name') or '').strip()
+            if not schema or not table_name:
+                continue
+            tables.append({
+                'schema': schema,
+                'table_name': table_name,
+                'columns': [],
+                'column_count': 0,
+                'columns_loaded': False,
+            })
+        return tables
+
     query = text(f"""
         SELECT table_schema, table_name, column_name, ordinal_position
         FROM information_schema.columns
@@ -713,6 +723,7 @@ def _get_live_database_tables(db_name: str, schema_names: list[str] | None = Non
             'table_name': table_name,
             'columns': [],
             'column_count': 0,
+            'columns_loaded': True,
         })
         column_name = mapping.get('column_name')
         if column_name:
@@ -942,7 +953,6 @@ def _resolve_upload_match_plan(
     upload_match_config = match_config if isinstance(match_config, dict) else get_upload_match_config_from_db(
         db_name,
         template_key=template_key if use_template_mode else None,
-        source_table_name=source_table_name if use_template_mode else None,
     )
 
     configured_match_table = str(upload_match_config.get('match_table', '') or '').strip()
@@ -1536,9 +1546,10 @@ def get_db_tables():
         return jsonify({'error': 'missing db_name'}), 400
     schema_filter = request.args.get('schema_name', '').strip() or None
     schemas = [s.strip() for s in (schema_filter or '').split(',') if s.strip()]
+    include_columns = request.args.get('include_columns', '1').strip().lower() not in {'0', 'false', 'no'}
     try:
         try:
-            live_tables = _get_live_database_tables(db_name, schemas or None)
+            live_tables = _get_live_database_tables(db_name, schemas or None, include_columns=include_columns)
             if live_tables:
                 tables = sorted(
                     live_tables,
@@ -1553,7 +1564,14 @@ def get_db_tables():
         for table in cached_tables:
             key = (str(table.get('schema') or ''), str(table.get('table_name') or ''))
             if key[1]:
-                merged[key] = dict(table)
+                item = dict(table)
+                if not include_columns:
+                    item['columns'] = []
+                    item['column_count'] = 0
+                    item['columns_loaded'] = False
+                else:
+                    item['columns_loaded'] = True
+                merged[key] = item
         tables = sorted(
             merged.values(),
             key=lambda table: (str(table.get('schema') or ''), str(table.get('table_name') or '')),
@@ -2028,7 +2046,7 @@ def upload_match_templates():
 
 @main_bp.route('/api/upload_table_columns', methods=['GET'])
 def upload_table_columns():
-    """获取某个历史上传表的字段"""
+    """按需获取某张目标表的字段"""
     db_name = request.args.get('db_name', '').strip()
     table_name = request.args.get('table_name', '').strip()
     if not db_name or not table_name:
@@ -2089,7 +2107,6 @@ def upload_match_configs_api():
                 'db_name': db_name,
                 'db_config': db_config,
                 'templates': get_upload_match_templates(db_name, db_config=db_config),
-                'default_config': db_config.get('default') or {},
             })
         except Exception as e:
             return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -2103,7 +2120,7 @@ def upload_match_configs_api():
         db_config = dict(load_upload_match_templates_config(db_name))
         if request.method == 'DELETE':
             template_key = (data.get('template_key') or '').strip()
-            if not template_key:
+            if not is_current_upload_template_key(template_key):
                 return jsonify({'error': 'missing template_key', 'status': 'error'}), 400
             delete_upload_match_template_record(db_name, template_key, current_user=get_current_user())
             db_config.pop(template_key, None)
@@ -2115,7 +2132,7 @@ def upload_match_configs_api():
 
         if request.method == 'PATCH':
             template_key = (data.get('template_key') or '').strip()
-            if not template_key:
+            if not is_current_upload_template_key(template_key):
                 return jsonify({'error': 'missing template_key', 'status': 'error'}), 400
             if 'is_enabled' not in data:
                 return jsonify({'error': 'missing is_enabled', 'status': 'error'}), 400
@@ -2137,7 +2154,9 @@ def upload_match_configs_api():
                 'templates': get_upload_match_templates(db_name, db_config=db_config),
             })
 
-        template_key = (data.get('template_key') or '').strip() or 'default'
+        template_key = (data.get('template_key') or '').strip()
+        if not is_current_upload_template_key(template_key):
+            return jsonify({'error': 'missing template_key', 'status': 'error'}), 400
         config = data.get('config')
         if not isinstance(config, dict):
             return jsonify({'error': 'missing config', 'status': 'error'}), 400
@@ -2221,7 +2240,6 @@ def match_uploaded_table():
         configured_upload_match_config = get_upload_match_config_from_db(
             db_name,
             template_key=template_key if use_template_mode else None,
-            source_table_name=source_table_name if use_template_mode else None,
         )
         if not template_label:
             template_label = (
@@ -2564,11 +2582,9 @@ def upload_excel():
     effective_table_name = table_name or os.path.splitext(os.path.basename(file.filename))[0]
     effective_table_name = effective_table_name.strip() or 'upload'
     config_template_key = template_key if use_template_mode else None
-    config_source_table_name = effective_table_name if use_template_mode else None
     upload_match_config = get_upload_match_config_from_db(
         db_name,
         template_key=config_template_key,
-        source_table_name=config_source_table_name,
     )
 
     safe_name = _build_timestamped_table_name(effective_table_name, upload_timestamp)

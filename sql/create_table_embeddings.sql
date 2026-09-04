@@ -1,4 +1,6 @@
-CREATE TABLE knowledge.table_embeddings (
+CREATE SCHEMA IF NOT EXISTS knowledge;
+
+CREATE TABLE IF NOT EXISTS knowledge.table_embeddings (
     id BIGSERIAL PRIMARY KEY,
     db_name VARCHAR(50) NOT NULL,
     schema_name VARCHAR(100),
