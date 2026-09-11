@@ -1162,13 +1162,17 @@ def _execute_match_query(
         match_field_pairs,
         target_sql_text,
     )
-    result_query = _build_match_result_sql(matched_table_name, matched_only=True)
+    result_query = _build_match_result_sql(matched_table_name)
 
     with engine.connect() as conn:
         conn.execute(text(f'DROP TABLE IF EXISTS tmp.{matched_table_sql} CASCADE'))
         conn.execute(text(f'CREATE TABLE tmp.{matched_table_sql} AS {match_query}'))
         conn.commit()
 
+        result_rows = conn.execute(text(f"""
+            SELECT COUNT(*)
+            FROM tmp.{matched_table_sql}
+        """)).fetchone()[0]
         matched_rows = conn.execute(text(f"""
             SELECT COUNT(*)
             FROM tmp.{matched_table_sql}
@@ -1180,6 +1184,7 @@ def _execute_match_query(
     return {
         'match_query': match_query,
         'result_query': result_query,
+        'result_rows': int(result_rows or 0),
         'matched_rows': int(matched_rows or 0),
         'preview_df': preview_df,
     }
@@ -1987,8 +1992,20 @@ def upload_match_history():
             matched_rows = payload.get('matched_rows')
             if matched_rows is None:
                 matched_rows = mapping.get('result_rows')
+            result_rows = payload.get('result_rows')
+            if result_rows is None:
+                result_rows = mapping.get('result_rows')
             source_table_name = payload.get('source_table_name') or mapping.get('selected_table') or ''
             template_label = payload.get('template_label') or payload.get('template_key') or ''
+            matched_table_name = payload.get('matched_table_name') or ''
+            matched_table_token = str(matched_table_name or '').strip()
+            if matched_table_token.lower().startswith('tmp.'):
+                matched_table_token = matched_table_token.split('.', 1)[1]
+            result_sql = (
+                _build_match_result_sql(matched_table_token)
+                if matched_table_token
+                else (payload.get('result_sql') or mapping.get('generated_sql') or '')
+            )
             history.append({
                 'title': mapping.get('nl_query') or f'{source_table_name} - {template_label}',
                 'source_table_name': source_table_name,
@@ -1996,14 +2013,15 @@ def upload_match_history():
                 'template_key': payload.get('template_key') or '',
                 'template_label': template_label,
                 'target_table_name': payload.get('target_table_name') or '',
-                'matched_table_name': payload.get('matched_table_name') or '',
+                'matched_table_name': matched_table_name,
                 'matched_rows': matched_rows,
+                'result_rows': result_rows,
                 'source_row_count': payload.get('source_row_count'),
                 'keyword_column': payload.get('keyword_column') or '',
                 'match_field': payload.get('match_field') or '',
                 'field_mappings': payload.get('field_mappings') or [],
                 'workflow_mode': workflow_mode,
-                'result_sql': payload.get('result_sql') or mapping.get('generated_sql') or '',
+                'result_sql': result_sql,
                 'execute_status': mapping.get('execute_status') or '',
                 'total_duration_ms': mapping.get('total_duration_ms'),
                 'created_at': str(mapping.get('created_at')) if mapping.get('created_at') else None,
@@ -2331,6 +2349,7 @@ def match_uploaded_table():
             'target_table_name': _format_full_table_name(match_plan['target_table_meta']),
             'matched_table_name': matched_table_full_name,
             'matched_rows': matched_rows,
+            'result_rows': int(match_result['result_rows'] or 0),
             'source_row_count': source_rows,
             'keyword_column': keyword_column,
             'match_field': match_plan['match_field'],
@@ -2349,7 +2368,7 @@ def match_uploaded_table():
             'generated_sql': result_sql,
             'execute_status': 'success',
             'error_message': None,
-            'result_rows': matched_rows,
+            'result_rows': int(match_result['result_rows'] or 0),
             'search_duration_ms': 0,
             'llm_duration_ms': 0,
             'sql_exec_duration_ms': total_duration_ms,
@@ -2376,6 +2395,7 @@ def match_uploaded_table():
             'target_table_name': _format_full_table_name(match_plan['target_table_meta']),
             'matched_table_name': matched_table_full_name,
             'matched_rows': matched_rows,
+            'result_rows': int(match_result['result_rows'] or 0),
             'source_row_count': source_rows,
             'preview_columns': list(match_result['preview_df'].columns),
             'preview_rows': safe_records(match_result['preview_df']),
@@ -2716,6 +2736,7 @@ def upload_excel():
                 'field_mappings': match_plan['field_mappings'],
                 'target_table_name': _format_full_table_name(match_plan['target_table_meta']),
                 'matched_rows': int(match_result['matched_rows'] or 0),
+                'result_rows': int(match_result['result_rows'] or 0),
                 'preview_columns': list(match_result['preview_df'].columns),
                 'preview_rows': safe_records(match_result['preview_df']),
                 'generated_sql': match_result['match_query'].strip(),

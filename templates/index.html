@@ -6749,9 +6749,10 @@
                 const workflowLabel = formatUploadMatchWorkflowMode(item.workflow_mode);
                 const matchedTable = item.matched_table_name || '';
                 const activeClass = matchedTable && matchedTable === activeMatchedTable ? ' active' : '';
-                const matchedRows = item.matched_rows == null ? '' : `匹配到 ${item.matched_rows} 条`;
+                const resultRows = item.result_rows == null ? '' : `结果 ${item.result_rows} 条`;
+                const matchedRows = item.matched_rows == null ? '' : `命中 ${item.matched_rows} 条`;
                 const ts = formatMatchHistoryTime(item.created_at);
-                const meta = [ts, workflowLabel, matchedRows].filter(Boolean).join(' · ');
+                const meta = [ts, workflowLabel, resultRows, matchedRows].filter(Boolean).join(' · ');
                 const title = `${sourceLabel} - ${templateLabel}`;
                 return `
                     <button type="button"
@@ -6798,7 +6799,9 @@
                     const resultSummary = document.getElementById('sharedResultSummary');
                     if (resultSummary) {
                         const summary = `${record.source_table_label || tableName} - ${record.template_label || templateKey}`;
-                        const meta = [formatMatchHistoryTime(record.created_at), record.matched_rows == null ? '' : `匹配到 ${record.matched_rows} 条`]
+                        const resultRows = record.result_rows == null ? '' : `结果 ${record.result_rows} 条`;
+                        const matchedRows = record.matched_rows == null ? '' : `命中 ${record.matched_rows} 条`;
+                        const meta = [formatMatchHistoryTime(record.created_at), resultRows, matchedRows]
                             .filter(Boolean)
                             .join(' · ');
                         resultSummary.textContent = `历史匹配：${summary}${meta ? `（${meta}）` : ''}`;
@@ -7851,11 +7854,15 @@
                     const fallbackMappingText = sourceField && targetField ? `${sourceField} -> ${targetField}` : '';
                     const fieldMappingText = mappingText || fallbackMappingText ? `，${mappingText || fallbackMappingText}` : '';
                     const sourceRowsText = typeof data.source_row_count === 'number' ? `，主表 ${data.source_row_count} 行` : '';
+                    const resultRowsText = typeof data.result_rows === 'number' ? `，结果 ${data.result_rows} 行` : '';
                     const matchedRowsText = typeof data.matched_rows === 'number' ? `，命中 ${data.matched_rows} 行` : '';
-                    resultSummary.textContent = `来源：${sourceTableLabel} · ${workflowLabel}${fieldMappingText}${sourceRowsText}${matchedRowsText}`;
+                    const resultTotal = data.result_rows != null && Number.isFinite(Number(data.result_rows))
+                        ? Number(data.result_rows)
+                        : (data.source_row_count != null && Number.isFinite(Number(data.source_row_count)) ? Number(data.source_row_count) : data.preview_rows.length);
+                    resultSummary.textContent = `来源：${sourceTableLabel} · ${workflowLabel}${fieldMappingText}${sourceRowsText}${resultRowsText}${matchedRowsText}`;
                     resultSummary.style.display = 'block';
                     resultData.innerHTML = createTable(data.preview_rows, previewColumns, {
-                        totalCount: data.matched_rows,
+                        totalCount: resultTotal,
                         exportActionLabel: '下载全部匹配结果',
                     });
                     lastMatchSql = data.generated_sql || '';
