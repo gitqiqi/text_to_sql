@@ -616,6 +616,20 @@ def _normalize_match_field_mappings(
     return mappings
 
 
+def _require_complete_template_match_mappings(field_mappings: list[dict]) -> None:
+    mappings = [mapping for mapping in (field_mappings or []) if isinstance(mapping, dict)]
+    if not mappings:
+        raise ValueError('请选择模板字段')
+
+    for index, mapping in enumerate(mappings):
+        source_field = str(mapping.get('source_field') or '').strip()
+        target_field = str(mapping.get('target_field') or '').strip()
+        if not source_field:
+            raise ValueError(f'第 {index + 1} 组匹配缺少目标表字段')
+        if not target_field:
+            raise ValueError(f'第 {index + 1} 组匹配缺少模板字段，请先选择模板字段')
+
+
 def _build_match_target_select_specs(
     match_field_specs,
     return_field_specs: list[dict],
@@ -2131,6 +2145,7 @@ def _resolve_upload_match_plan(
     auto_match_table: bool = True,
     use_template_mode: bool = True,
     ai_mode: bool = False,
+    require_explicit_match_field: bool = False,
     sample_keywords: list[str] | None = None,
     match_config: dict | None = None,
 ) -> dict:
@@ -2201,11 +2216,15 @@ def _resolve_upload_match_plan(
         raw_match_field = explicit_match_fields[0]
     elif match_field_input:
         raw_match_field = match_field_input
-    elif use_template_mode and configured_match_field:
+    elif use_template_mode and configured_match_field and not require_explicit_match_field:
         raw_match_field = configured_match_field
-    else:
+    elif not require_explicit_match_field:
         raw_match_field = _guess_match_field(target_columns, keyword_column, match_hint)
+    else:
+        raw_match_field = ''
     if not raw_match_field:
+        if require_explicit_match_field:
+            raise ValueError('请选择模板字段')
         raise ValueError('未能识别匹配字段，请在模板中配置，或补充业务描述')
 
     if use_template_mode and configured_return_fields is not None:
@@ -3756,6 +3775,8 @@ def match_uploaded_table():
                     raise ValueError(f'第 {index + 1} 组匹配缺少目标表字段')
                 if source_field not in source_columns:
                     return jsonify({'error': f'目标表字段 {source_field} 不在目标表字段中', 'status': 'error'}), 400
+        if use_template_mode:
+            _require_complete_template_match_mappings(field_mappings)
 
         match_plan = _resolve_upload_match_plan(
             db_name,
@@ -3772,6 +3793,7 @@ def match_uploaded_table():
             auto_match_table=auto_match_table,
             use_template_mode=use_template_mode,
             ai_mode=ai_mode,
+            require_explicit_match_field=use_template_mode,
             match_config=configured_upload_match_config,
         )
 
@@ -4100,6 +4122,8 @@ def upload_excel():
                         raise ValueError(f'第 {index + 1} 组匹配缺少目标表字段')
                     if source_field not in df.columns:
                         return jsonify({'error': f'目标表字段 {source_field} 不在 Excel 表头中', 'status': 'error'}), 400
+            if use_template_mode:
+                _require_complete_template_match_mappings(field_mappings)
 
         engine = DatabasePoolManager.get_engine(db_name)
 
@@ -4162,6 +4186,7 @@ def upload_excel():
                 auto_match_table=auto_match_table,
                 use_template_mode=use_template_mode,
                 ai_mode=ai_mode,
+                require_explicit_match_field=use_template_mode,
                 sample_keywords=keyword_samples,
                 match_config=upload_match_config,
             )

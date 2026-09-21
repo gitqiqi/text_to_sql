@@ -7000,6 +7000,31 @@
             return mappings;
         }
 
+        function getUploadMatchMappingValidationError(mappings = [], workflowMode = 'template', templateKey = '') {
+            if (workflowMode !== 'template') return '';
+            if (!String(templateKey || '').trim()) {
+                return '请先选择业务模板';
+            }
+
+            const activeMappings = (Array.isArray(mappings) ? mappings : [])
+                .map(normalizeUploadMatchFieldMapping)
+                .filter(item => item.source_field || item.target_field);
+            if (activeMappings.length === 0) {
+                return '请选择目标表字段和模板字段';
+            }
+
+            for (let index = 0; index < activeMappings.length; index += 1) {
+                const item = activeMappings[index];
+                if (!item.source_field) {
+                    return `第 ${index + 1} 组匹配缺少目标表字段`;
+                }
+                if (!item.target_field) {
+                    return `第 ${index + 1} 组匹配缺少模板字段，请先选择模板字段`;
+                }
+            }
+            return '';
+        }
+
         function formatUploadFieldMappingText(mappings = []) {
             return (Array.isArray(mappings) ? mappings : [])
                 .map(normalizeUploadMatchFieldMapping)
@@ -8636,6 +8661,13 @@
             if (!sourceTableName) {
                 statusDiv.className = 'upload-status error';
                 statusDiv.textContent = '请先选择目标表';
+                return;
+            }
+            const mappingError = getUploadMatchMappingValidationError(fieldMappings, workflowMode, templateKey);
+            if (mappingError) {
+                resetUploadResultArea();
+                statusDiv.className = 'upload-status error';
+                statusDiv.textContent = mappingError;
                 return;
             }
 
