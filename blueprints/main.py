@@ -346,6 +346,142 @@ def _is_safe_unquoted_identifier(value: str) -> bool:
     ))
 
 
+def _split_sql_top_level_csv(expression: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote_char = ''
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if quote_char:
+            if char == quote_char:
+                if quote_char in {"'", '"'} and index + 1 < len(expression) and expression[index + 1] == quote_char:
+                    index += 2
+                    continue
+                quote_char = ''
+            index += 1
+            continue
+
+        if char in {"'", '"'}:
+            quote_char = char
+        elif char == '(':
+            depth += 1
+        elif char == ')' and depth > 0:
+            depth -= 1
+        elif char == ',' and depth == 0:
+            parts.append(expression[start:index].strip())
+            start = index + 1
+        index += 1
+
+    tail = expression[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _find_top_level_sql_keyword(sql: str, keyword: str, start: int = 0) -> int:
+    keyword_lower = keyword.lower()
+    depth = 0
+    quote_char = ''
+    index = start
+    while index < len(sql):
+        char = sql[index]
+        if quote_char:
+            if char == quote_char:
+                if quote_char in {"'", '"'} and index + 1 < len(sql) and sql[index + 1] == quote_char:
+                    index += 2
+                    continue
+                quote_char = ''
+            index += 1
+            continue
+
+        if char in {"'", '"'}:
+            quote_char = char
+            index += 1
+            continue
+        if char == '(':
+            depth += 1
+            index += 1
+            continue
+        if char == ')':
+            depth = max(depth - 1, 0)
+            index += 1
+            continue
+
+        if depth == 0 and sql[index:index + len(keyword)].lower() == keyword_lower:
+            before = sql[index - 1:index]
+            after = sql[index + len(keyword):index + len(keyword) + 1]
+            if not (before and (before.isalnum() or before == '_')) and not (after and (after.isalnum() or after == '_')):
+                return index
+        index += 1
+    return -1
+
+
+def _unquote_sql_identifier(identifier: str) -> str:
+    token = str(identifier or '').strip()
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return token[1:-1].replace('""', '"')
+    if any(ord(char) > 127 for char in token):
+        return token
+    return token.lower()
+
+
+def _extract_sql_identifier_alias(select_item: str) -> str:
+    item = str(select_item or '').strip()
+    if not item:
+        return ''
+
+    alias_token = r'(?:"(?:[^"]|"")*"|[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*)'
+    as_match = re.search(rf'\bAS\s+({alias_token})\s*$', item, flags=re.IGNORECASE)
+    if as_match:
+        return _unquote_sql_identifier(as_match.group(1))
+
+    simple_ref_match = re.fullmatch(
+        rf'(?:{alias_token}\.)?({alias_token})',
+        item,
+    )
+    if simple_ref_match:
+        return _unquote_sql_identifier(simple_ref_match.group(1))
+
+    implicit_match = re.search(rf'\s+({alias_token})\s*$', item)
+    if implicit_match:
+        return _unquote_sql_identifier(implicit_match.group(1))
+
+    return ''
+
+
+def _extract_template_query_output_columns(template_sql: str) -> dict[str, str]:
+    sql = str(template_sql or '').strip()
+    if not sql:
+        return {}
+
+    select_index = _find_top_level_sql_keyword(sql, 'select')
+    if select_index < 0:
+        return {}
+    from_index = _find_top_level_sql_keyword(sql, 'from', select_index + len('select'))
+    if from_index < 0:
+        return {}
+
+    select_list = sql[select_index + len('select'):from_index]
+    output_columns: dict[str, str] = {}
+    for item in _split_sql_top_level_csv(select_list):
+        alias = _extract_sql_identifier_alias(item)
+        if alias:
+            output_columns.setdefault(_clean_name(alias), alias)
+    return output_columns
+
+
+def _resolve_template_query_output_name(spec: dict, output_columns: dict[str, str]) -> str:
+    business_field = str(spec.get('business_field') or '').strip()
+    db_field = str(spec.get('db_field') or '').strip()
+    for candidate in (business_field, db_field):
+        key = _clean_name(candidate)
+        if key and key in output_columns:
+            return output_columns[key]
+    return business_field or db_field
+
+
 def _template_query_column_ref(alias: str, template_sql: str) -> str:
     """引用模板 SELECT 的输出列，兼容中文别名和大小写别名。"""
     alias = str(alias or '').strip()
@@ -360,6 +496,8 @@ def _template_query_column_ref(alias: str, template_sql: str) -> str:
     # 模板 SQL 中未加引号的中文别名会被 PostgreSQL 原样保留中文、
     # 但会把其中的 ASCII 大写折叠为小写，因此这里也必须使用未加引号形式。
     if _is_safe_unquoted_identifier(alias) and any(ord(char) > 127 for char in alias):
+        return alias
+    if re.fullmatch(r'[a-z_][a-z0-9_$]*', alias):
         return alias
     return _quote_ident(alias)
 
@@ -2289,8 +2427,10 @@ def _build_match_sql(
 
     if use_template_query:
         target_from_sql = f'({template_query_sql}) b'
+        template_output_columns = _extract_template_query_output_columns(template_query_sql)
         target_column_ref = lambda alias: _template_query_column_ref(alias, template_query_sql)
     else:
+        template_output_columns = {}
         target_parts = []
         for spec in resolved_select_specs:
             alias = str(spec.get('alias') or '').strip()
@@ -2305,6 +2445,11 @@ def _build_match_sql(
             f'{target_filter_sql}) b'
         )
         target_column_ref = lambda alias: _quote_ident(alias)
+
+    def resolve_target_output_name(spec: dict) -> str:
+        if use_template_query:
+            return _resolve_template_query_output_name(spec, template_output_columns)
+        return str(spec.get('alias') or spec.get('business_field') or spec.get('db_field') or '').strip()
 
     join_parts = []
     for index, pair in enumerate(normalized_pairs):
@@ -2326,7 +2471,8 @@ def _build_match_sql(
             raise ValueError('匹配字段缺少有效名称')
 
         keyword_ident = _quote_ident(pair['source_field'])
-        match_ident = target_column_ref(match_alias)
+        match_output_name = resolve_target_output_name(match_spec or {'business_field': match_alias})
+        match_ident = target_column_ref(match_output_name)
         source_value = f'a.{keyword_ident}'
         target_value = f'b.{match_ident}'
         source_text = f'{source_value}::text'
@@ -2344,11 +2490,17 @@ def _build_match_sql(
         raise ValueError('匹配字段缺少有效条件')
 
     outer_parts = ['a.*']
-    outer_parts.extend(
-        f'b.{target_column_ref(str(spec.get("alias") or "").strip())}'
-        for spec in resolved_select_specs
-        if str(spec.get('alias') or '').strip()
-    )
+    for spec in resolved_select_specs:
+        display_alias = str(spec.get('alias') or '').strip()
+        if not display_alias:
+            continue
+        output_name = resolve_target_output_name(spec)
+        if not output_name:
+            continue
+        output_expr = f'b.{target_column_ref(output_name)}'
+        if use_template_query and _clean_name(output_name) != _clean_name(display_alias):
+            output_expr = f'{output_expr} AS {_quote_ident(display_alias)}'
+        outer_parts.append(output_expr)
     select_sql = ', '.join(outer_parts)
 
     return (
