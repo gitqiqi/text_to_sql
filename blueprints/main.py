@@ -41,6 +41,11 @@ from core.upload_match_template_repo import (
     upsert_upload_match_template,
 )
 
+INSERT_RESPONSE_ROW_LIMIT = 200
+INSERT_DUPLICATE_MAX_PAGE_SIZE = 1000
+INSERT_SESSION_TTL_SECONDS = 2 * 60 * 60
+_insert_excel_sessions: dict[str, dict] = {}
+
 
 def _json_safe_cell(value):
     if value is None:
@@ -55,6 +60,12 @@ def _json_safe_cell(value):
         return value.strftime('%Y-%m-%d %H:%M:%S')
     if isinstance(value, date):
         return value.isoformat()
+    item_method = getattr(value, 'item', None)
+    if callable(item_method):
+        try:
+            return item_method()
+        except Exception:
+            pass
     return value
 
 
@@ -777,6 +788,1021 @@ def _resolve_table_meta(tables: list[dict], table_input: str) -> dict | None:
         if _clean_name(_format_full_table_name(table)) == normalized:
             return table
     return None
+
+
+def _normalize_insert_excel_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """校验插入 Excel 的表头，并拒绝空列名或重复列名。"""
+    normalized_columns = []
+    seen_columns = set()
+    for raw_column in df.columns:
+        column = str(raw_column).strip()
+        if not column or column.lower() == 'nan':
+            raise ValueError('Excel 存在空列名，请先补充表头')
+        normalized_key = column.lower()
+        if normalized_key in seen_columns:
+            raise ValueError(f'Excel 存在重复列名：{column}')
+        seen_columns.add(normalized_key)
+        normalized_columns.append(column)
+
+    df = df.copy()
+    df.columns = normalized_columns
+    df = df.dropna(how='all').reset_index(drop=True)
+    if df.empty:
+        raise ValueError('Excel 没有可插入的数据行')
+    return df
+
+
+def _resolve_insert_target_table_meta(db_name: str, table_input: str) -> dict:
+    """只解析 tmp schema 下的已有数据库表。"""
+    raw_table_input = str(table_input or '').strip()
+    if not raw_table_input:
+        raise ValueError('请选择目标表')
+
+    schema_name, table_name = _split_schema_table(raw_table_input, default_schema='tmp')
+    if schema_name.lower() != 'tmp':
+        raise ValueError('插入数据只允许操作 tmp schema 下的表')
+    if not table_name:
+        raise ValueError('请选择目标表')
+    if '_middle' in table_name.lower():
+        raise ValueError('插入数据不支持操作 _middle 中间表')
+
+    resolved_meta = _get_live_table_meta(
+        db_name,
+        f'tmp.{table_name}',
+        default_schema='tmp',
+    )
+    if not resolved_meta or not resolved_meta.get('columns'):
+        raise ValueError(f'未找到 tmp 表：tmp.{table_name}')
+    return resolved_meta
+
+
+def _prepare_insert_excel_data(
+    db_name: str,
+    table_input: str,
+    file,
+) -> tuple[dict, pd.DataFrame, list[dict]]:
+    """读取 Excel，要求 Excel 字段是目标表字段的严格同名子集。"""
+    if not file or not file.filename:
+        raise ValueError('请选择文件')
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        raise ValueError('仅支持 .xlsx 或 .xls 格式')
+
+    df = pd.read_excel(file)
+    if df.empty or len(df.columns) == 0:
+        raise ValueError('Excel 文件为空')
+    df = _normalize_insert_excel_columns(df)
+
+    target_meta = _resolve_insert_target_table_meta(db_name, table_input)
+    target_columns = list(target_meta.get('columns') or [])
+    unknown_columns = [
+        column for column in df.columns
+        if column not in target_columns
+    ]
+    if unknown_columns:
+        raise ValueError(
+            f'Excel 字段必须与 tmp 目标表字段同名，未知字段：{"、".join(unknown_columns)}'
+        )
+
+    column_mappings = [
+        {
+            'excel_column': column,
+            'target_column': column,
+        }
+        for column in df.columns
+    ]
+    return target_meta, df, column_mappings
+
+
+def _insert_staging_table_name() -> str:
+    return f'__insert_stage_{uuid.uuid4().hex[:16]}'
+
+
+def _insert_staging_table_sql(target_meta: dict, staging_table_name: str) -> str:
+    return (
+        f'{_quote_ident(target_meta.get("schema") or "tmp")}.'
+        f'{_quote_ident(staging_table_name)}'
+    )
+
+
+def _insert_drop_table_suffix(engine) -> str:
+    return '' if getattr(engine.dialect, 'name', '') == 'sqlite' else ' CASCADE'
+
+
+def _create_insert_staging_table(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+) -> str:
+    """把整份 Excel 落到 tmp staging 表，后续查重和插入都在库内完成。"""
+    staging_table_name = _insert_staging_table_name()
+    target_table_sql = _quote_table_name(target_meta)
+    staging_table_sql = _insert_staging_table_sql(target_meta, staging_table_name)
+    staging_columns = ', '.join(
+        [
+            'CAST(NULL AS BIGINT) AS "__upload_row_index"',
+            'CAST(NULL AS BOOLEAN) AS "__insert_existing_match"',
+            'CAST(NULL AS BOOLEAN) AS "__insert_file_duplicate"',
+            *[
+                f't.{_quote_ident(column)} AS {_quote_ident(column)}'
+                for column in df.columns
+            ],
+        ]
+    )
+    create_sql = f"""
+        CREATE TABLE {staging_table_sql} AS
+        SELECT {staging_columns}
+        FROM {target_table_sql} t
+        WHERE 1 = 0
+    """
+
+    engine = DatabasePoolManager.get_engine(db_name)
+    try:
+        # Hologres 对 DDL/DML 的事务边界比较严格，建表和写入分开提交。
+        with engine.connect() as conn:
+            conn.execute(text(
+                f'DROP TABLE IF EXISTS {staging_table_sql}{_insert_drop_table_suffix(engine)}'
+            ))
+            conn.execute(text(create_sql))
+            conn.commit()
+
+        staging_df = df.copy()
+        staging_df.insert(0, '__upload_row_index', range(len(staging_df)))
+        staging_df.to_sql(
+            staging_table_name,
+            engine,
+            schema=target_meta.get('schema') or 'tmp',
+            if_exists='append',
+            index=False,
+            method=None,
+            chunksize=5000,
+        )
+    except Exception:
+        _drop_insert_staging_table(db_name, target_meta, staging_table_name)
+        raise
+
+    return staging_table_name
+
+
+def _drop_insert_staging_table(
+    db_name: str,
+    target_meta: dict,
+    staging_table_name: str | None,
+):
+    if not staging_table_name:
+        return
+    try:
+        engine = DatabasePoolManager.get_engine(db_name)
+        staging_table_sql = _insert_staging_table_sql(target_meta, staging_table_name)
+        with engine.connect() as conn:
+            conn.execute(text(
+                f'DROP TABLE IF EXISTS {staging_table_sql}{_insert_drop_table_suffix(engine)}'
+            ))
+            conn.commit()
+    except Exception as error:
+        print(f'清理插入 staging 表失败（忽略）: {error}')
+
+
+def _get_insert_table_constraints(db_name: str, target_meta: dict) -> list[dict]:
+    """读取 tmp 表的主键和唯一约束，优先返回主键。"""
+    engine = DatabasePoolManager.get_engine(db_name)
+    schema_name = str(target_meta.get('schema') or '').strip()
+    table_name = str(target_meta.get('table_name') or '').strip()
+    if not schema_name or not table_name:
+        return []
+
+    if getattr(engine.dialect, 'name', '') == 'sqlite':
+        constraints = []
+        with engine.connect() as conn:
+            table_identifier = table_name.replace('"', '""')
+            primary_rows = conn.exec_driver_sql(
+                f'PRAGMA table_info("{table_identifier}")'
+            ).fetchall()
+        primary_columns = [
+            str(row[1])
+            for row in sorted(primary_rows, key=lambda item: int(item[5] or 0))
+            if int(row[5] or 0) > 0
+        ]
+        if primary_columns:
+            constraints.append({
+                'name': f'{table_name}_pkey',
+                'type': 'PRIMARY KEY',
+                'columns': primary_columns,
+            })
+        return constraints
+
+    query = text("""
+        SELECT
+            tc.constraint_name,
+            tc.constraint_type,
+            kcu.column_name,
+            kcu.ordinal_position
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_catalog = kcu.constraint_catalog
+         AND tc.constraint_schema = kcu.constraint_schema
+         AND tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+         AND tc.table_name = kcu.table_name
+        WHERE tc.table_schema = :schema_name
+          AND tc.table_name = :table_name
+          AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+        ORDER BY
+            CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN 0 ELSE 1 END,
+            tc.constraint_name,
+            kcu.ordinal_position
+    """)
+    grouped = {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                query,
+                {
+                    'schema_name': schema_name,
+                    'table_name': table_name,
+                },
+            ).fetchall()
+    except Exception:
+        return []
+
+    for row in rows:
+        mapping = row._mapping
+        name = str(mapping.get('constraint_name') or '').strip()
+        column = str(mapping.get('column_name') or '').strip()
+        constraint_type = str(mapping.get('constraint_type') or '').strip()
+        if not name or not column:
+            continue
+        item = grouped.setdefault(
+            (name, constraint_type),
+            {
+                'name': name,
+                'type': constraint_type,
+                'columns': [],
+            },
+        )
+        item['columns'].append(column)
+
+    return list(grouped.values())
+
+
+def _resolve_insert_duplicate_key(
+    db_name: str,
+    target_meta: dict,
+    upload_columns: list[str],
+) -> dict:
+    constraints = _get_insert_table_constraints(db_name, target_meta)
+    full_table_name = _format_full_table_name(target_meta)
+    if not constraints:
+        raise ValueError(
+            f'目标表 {full_table_name} 没有主键或唯一约束，无法可靠判断重复数据；'
+            '请先为 tmp 表设置主键或唯一键'
+        )
+
+    upload_column_set = set(upload_columns)
+    usable = [
+        item for item in constraints
+        if set(item.get('columns') or []).issubset(upload_column_set)
+    ]
+    if not usable:
+        key_text = '；'.join(
+            f'{item.get("type", "唯一键")} {", ".join(item.get("columns") or [])}'
+            for item in constraints
+        )
+        raise ValueError(
+            f'Excel 必须包含目标表的主键或唯一键字段，当前约束为：{key_text}'
+        )
+    return usable[0]
+
+
+def _insert_join_condition(left_alias: str, right_alias: str, key_columns: list[str]) -> str:
+    return ' AND '.join(
+        f'({left_alias}.{_quote_ident(column_name)} = {right_alias}.{_quote_ident(column_name)} '
+        f'OR ({left_alias}.{_quote_ident(column_name)} IS NULL '
+        f'AND {right_alias}.{_quote_ident(column_name)} IS NULL))'
+        for column_name in key_columns
+    )
+
+def _find_insert_duplicates_with_staging(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    key_columns: list[str],
+    staging_table_name: str,
+) -> dict:
+    """在 staging 表内标记并查出历史重复和 Excel 内重复行号。"""
+    empty = {
+        'existing_row_indices': set(),
+        'file_row_indices': set(),
+    }
+    if df.empty or not key_columns or not staging_table_name:
+        return empty
+
+    engine = DatabasePoolManager.get_engine(db_name)
+    target_table_sql = _quote_table_name(target_meta)
+    staging_table_sql = _insert_staging_table_sql(target_meta, staging_table_name)
+    key_projection = ', '.join(
+        _quote_ident(column_name)
+        for column_name in key_columns
+    )
+    target_join = _insert_join_condition('s', 't', key_columns)
+    file_join = _insert_join_condition('s', 'd', key_columns)
+    file_count = '__insert_file_count'
+
+    mark_existing_query = text(f"""
+        UPDATE {staging_table_sql} AS s
+        SET {_quote_ident('__insert_existing_match')} = TRUE
+        FROM {target_table_sql} t
+        WHERE {target_join}
+    """)
+    mark_file_duplicate_query = text(f"""
+        UPDATE {staging_table_sql} AS s
+        SET {_quote_ident('__insert_file_duplicate')} = TRUE
+        FROM (
+            SELECT {key_projection}, COUNT(*) AS {_quote_ident(file_count)}
+            FROM {staging_table_sql}
+            GROUP BY {key_projection}
+            HAVING COUNT(*) > 1
+        ) d
+        WHERE {file_join}
+    """)
+    query = text(f"""
+        SELECT
+            s."__upload_row_index" AS upload_row,
+            CASE
+                WHEN COALESCE(s."__insert_existing_match", FALSE) THEN 1
+                ELSE 0
+            END AS existing_match,
+            CASE
+                WHEN COALESCE(s."__insert_file_duplicate", FALSE) THEN 1
+                ELSE 0
+            END AS file_match
+        FROM {staging_table_sql} s
+        WHERE COALESCE(s."__insert_existing_match", FALSE)
+           OR COALESCE(s."__insert_file_duplicate", FALSE)
+        ORDER BY s."__upload_row_index"
+    """)
+
+    with engine.connect() as conn:
+        try:
+            conn.execute(mark_existing_query)
+            conn.commit()
+            conn.execute(mark_file_duplicate_query)
+            conn.commit()
+            rows = conn.execute(query).fetchall()
+        except Exception:
+            conn.rollback()
+            raise
+
+    existing_indices = set()
+    file_indices = set()
+    for row in rows:
+        mapping = row._mapping
+        upload_row = mapping.get('upload_row')
+        if upload_row is None:
+            continue
+        upload_row = int(upload_row)
+        if int(mapping.get('existing_match') or 0):
+            existing_indices.add(upload_row)
+        if int(mapping.get('file_match') or 0):
+            file_indices.add(upload_row)
+    return {
+        'existing_row_indices': existing_indices,
+        'file_row_indices': file_indices,
+    }
+
+
+def _fetch_insert_existing_duplicate_rows(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    key_columns: list[str],
+    row_indices: list[int],
+    staging_table_name: str,
+) -> pd.DataFrame:
+    target_columns = list(target_meta.get('columns') or [])
+    failed_columns = ['__upload_row_index', 'Excel行号'] + target_columns + ['失败原因']
+    if df.empty or not key_columns or not row_indices or not staging_table_name:
+        return pd.DataFrame(columns=failed_columns)
+
+    engine = DatabasePoolManager.get_engine(db_name)
+    target_table_sql = _quote_table_name(target_meta)
+    staging_table_sql = _insert_staging_table_sql(target_meta, staging_table_name)
+    target_projection = ', '.join(
+        f't.{_quote_ident(column)}'
+        for column in target_columns
+    ) or 't.*'
+    join_condition = _insert_join_condition('t', 's', key_columns)
+    query = text(f"""
+        SELECT
+            s."__upload_row_index" AS "__upload_row_index",
+            s."__upload_row_index" + 2 AS "Excel行号",
+            {target_projection}
+        FROM {staging_table_sql} s
+        JOIN {target_table_sql} t
+          ON {join_condition}
+        WHERE COALESCE(s."__insert_existing_match", FALSE)
+          AND s."__upload_row_index" IN :upload_indices
+        ORDER BY s."__upload_row_index"
+    """).bindparams(bindparam('upload_indices', expanding=True))
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            query,
+            {'upload_indices': [int(index) for index in row_indices]},
+        ).fetchall()
+
+    records = []
+    for row in rows:
+        record = dict(row._mapping)
+        record['失败原因'] = '目标表已存在相同主键或唯一键'
+        records.append(record)
+    if not records:
+        return pd.DataFrame(columns=failed_columns)
+
+    failed_df = pd.DataFrame(records)
+    for column in failed_columns:
+        if column not in failed_df.columns:
+            failed_df[column] = None
+    return failed_df[failed_columns]
+
+
+def _insert_non_duplicate_rows_from_staging(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    staging_table_name: str,
+) -> int:
+    """从 staging 表直接 INSERT 可插入行，避免把非重复数据再传回数据库。"""
+    if df.empty or not staging_table_name:
+        return 0
+
+    engine = DatabasePoolManager.get_engine(db_name)
+    target_table_sql = _quote_table_name(target_meta)
+    staging_table_sql = _insert_staging_table_sql(target_meta, staging_table_name)
+    insert_columns = list(df.columns)
+    insert_projection = ', '.join(
+        f's.{_quote_ident(column)}'
+        for column in insert_columns
+    )
+    insert_column_names = ', '.join(
+        _quote_ident(column)
+        for column in insert_columns
+    )
+    query = text(f"""
+        INSERT INTO {target_table_sql} ({insert_column_names})
+        SELECT {insert_projection}
+        FROM {staging_table_sql} s
+        WHERE COALESCE(s."__insert_existing_match", FALSE) = FALSE
+          AND COALESCE(s."__insert_file_duplicate", FALSE) = FALSE
+    """)
+    with engine.begin() as conn:
+        result = conn.execute(query)
+        rowcount = result.rowcount
+    return int(rowcount) if rowcount and rowcount > 0 else 0
+
+
+def _analyze_insert_duplicates(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    staging_table_name: str,
+) -> dict:
+    if not staging_table_name:
+        raise ValueError('插入查重必须使用 staging 会话，请重新上传 Excel')
+
+    duplicate_key = _resolve_insert_duplicate_key(
+        db_name,
+        target_meta,
+        list(df.columns),
+    )
+    key_columns = list(duplicate_key.get('columns') or [])
+    staging_summary = _find_insert_duplicates_with_staging(
+        db_name,
+        target_meta,
+        df,
+        key_columns,
+        staging_table_name,
+    )
+    existing_duplicate_indices = set(
+        staging_summary.get('existing_row_indices') or []
+    )
+    file_duplicate_indices = set(
+        staging_summary.get('file_row_indices') or []
+    )
+    duplicate_indices = existing_duplicate_indices | file_duplicate_indices
+    return {
+        'key_name': duplicate_key.get('name') or '',
+        'key_type': duplicate_key.get('type') or '',
+        'key_columns': key_columns,
+        'existing_rows': len(existing_duplicate_indices),
+        'file_rows': len(file_duplicate_indices),
+        'total_rows': len(duplicate_indices),
+        'existing_row_indices': sorted(existing_duplicate_indices),
+        'file_row_indices': sorted(file_duplicate_indices),
+        'row_indices': sorted(duplicate_indices),
+        'staging_table_name': staging_table_name or '',
+    }
+
+
+def _public_insert_duplicate_summary(duplicate_summary: dict) -> dict:
+    """只返回分页和更新状态需要的重复汇总。"""
+    return {
+        'key_name': duplicate_summary.get('key_name') or '',
+        'key_type': duplicate_summary.get('key_type') or '',
+        'key_columns': list(duplicate_summary.get('key_columns') or []),
+        'existing_rows': int(duplicate_summary.get('existing_rows') or 0),
+        'file_rows': int(duplicate_summary.get('file_rows') or 0),
+        'total_rows': int(duplicate_summary.get('total_rows') or 0),
+    }
+
+
+def _parse_insert_duplicate_page_options(source) -> tuple[int, int]:
+    try:
+        page = int(source.get('duplicate_page') or source.get('page') or 1)
+    except Exception:
+        page = 1
+    try:
+        page_size = int(
+            source.get('duplicate_page_size')
+            or source.get('page_size')
+            or INSERT_RESPONSE_ROW_LIMIT
+        )
+    except Exception:
+        page_size = INSERT_RESPONSE_ROW_LIMIT
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, INSERT_DUPLICATE_MAX_PAGE_SIZE))
+    return page, page_size
+
+
+def _build_insert_duplicate_page_meta(
+    duplicate_summary: dict,
+    page: int,
+    page_size: int,
+) -> dict:
+    total = int(duplicate_summary.get('total_rows') or 0)
+    total_pages = math.ceil(total / page_size) if total else 0
+    normalized_page = min(page, total_pages) if total_pages else 1
+    offset = (normalized_page - 1) * page_size if total else 0
+    current_count = max(0, min(page_size, total - offset))
+    return {
+        'page': normalized_page,
+        'page_size': page_size,
+        'total': total,
+        'total_pages': total_pages,
+        'offset': offset,
+        'current_count': current_count,
+        'has_prev': total_pages > 0 and normalized_page > 1,
+        'has_next': total_pages > 0 and normalized_page < total_pages,
+    }
+
+
+def _cleanup_insert_excel_sessions():
+    now = time.time()
+    expired = [
+        session_id for session_id, item in _insert_excel_sessions.items()
+        if float(item.get('expires_at') or 0) <= now
+    ]
+    for session_id in expired:
+        item = _insert_excel_sessions.get(session_id) or {}
+        _drop_insert_staging_table(
+            item.get('db_name') or '',
+            item.get('target_meta') or {},
+            item.get('staging_table_name'),
+        )
+        _insert_excel_sessions.pop(session_id, None)
+
+
+def _store_insert_excel_session(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    column_mappings: list[dict],
+    duplicate_summary: dict,
+    staging_table_name: str,
+) -> str:
+    _cleanup_insert_excel_sessions()
+    session_id = uuid.uuid4().hex
+    now = time.time()
+    _insert_excel_sessions[session_id] = {
+        'db_name': db_name,
+        'target_meta': dict(target_meta),
+        'target_table': _format_full_table_name(target_meta),
+        'df': df.copy(),
+        'column_mappings': list(column_mappings or []),
+        'duplicate_summary': duplicate_summary,
+        'staging_table_name': staging_table_name,
+        'created_at': now,
+        'expires_at': now + INSERT_SESSION_TTL_SECONDS,
+    }
+    return session_id
+
+
+def _delete_insert_excel_session(session_id: str):
+    session_id = str(session_id or '').strip()
+    if not session_id:
+        return
+    item = _insert_excel_sessions.pop(session_id, None)
+    if not item:
+        return
+    _drop_insert_staging_table(
+        item.get('db_name') or '',
+        item.get('target_meta') or {},
+        item.get('staging_table_name'),
+    )
+
+
+def _get_insert_excel_session(session_id: str, db_name: str, table_name: str = '') -> dict | None:
+    session_id = str(session_id or '').strip()
+    if not session_id:
+        return None
+
+    _cleanup_insert_excel_sessions()
+    item = _insert_excel_sessions.get(session_id)
+    if not item:
+        raise ValueError('重复数据会话已过期，请重新上传 Excel 后再操作')
+    if db_name and item.get('db_name') != db_name:
+        raise ValueError('重复数据会话与当前数据库不一致，请重新上传 Excel')
+    if table_name:
+        schema_name, raw_table_name = _split_schema_table(table_name, default_schema='tmp')
+        requested_table = f'{schema_name}.{raw_table_name}' if schema_name else raw_table_name
+        if _clean_name(requested_table) != _clean_name(item.get('target_table')):
+            raise ValueError('重复数据会话与目标表不一致，请重新上传 Excel')
+
+    item['expires_at'] = time.time() + INSERT_SESSION_TTL_SECONDS
+    return item
+
+
+def _build_insert_duplicate_response_payload(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    column_mappings: list[dict],
+    duplicate_summary: dict,
+    page: int,
+    page_size: int,
+    *,
+    mode: str,
+    insert_session_id: str,
+) -> dict:
+    page_meta = _build_insert_duplicate_page_meta(duplicate_summary, page, page_size)
+    failed_df = _build_insert_failed_rows(
+        db_name,
+        target_meta,
+        df,
+        duplicate_summary,
+        offset=page_meta['offset'],
+        limit=page_meta['page_size'],
+    )
+    update_columns, update_rows = _build_insert_duplicate_update_rows(
+        db_name,
+        target_meta,
+        df,
+        duplicate_summary,
+        offset=page_meta['offset'],
+        limit=page_meta['page_size'],
+    )
+    duplicate_count = int(duplicate_summary.get('total_rows') or 0)
+    return {
+        'mode': mode,
+        'table_name': _format_full_table_name(target_meta),
+        'insert_session_id': insert_session_id,
+        'duplicate_summary': _public_insert_duplicate_summary(duplicate_summary),
+        'duplicate_page': page_meta['page'],
+        'duplicate_page_size': page_meta['page_size'],
+        'duplicate_total_pages': page_meta['total_pages'],
+        'duplicate_page_offset': page_meta['offset'],
+        'duplicate_page_count': page_meta['current_count'],
+        'duplicate_has_prev': page_meta['has_prev'],
+        'duplicate_has_next': page_meta['has_next'],
+        'column_mappings': column_mappings,
+        'failed_columns': list(failed_df.columns),
+        'failed_rows': safe_records(failed_df),
+        'failed_count': duplicate_count,
+        'failed_preview_count': len(failed_df),
+        'failed_rows_limited': duplicate_count > len(failed_df),
+        'duplicate_update_columns': update_columns,
+        'duplicate_update_rows': update_rows,
+        'duplicate_update_total': duplicate_count,
+        'insert_update_eligible_total': int(
+            duplicate_summary.get('existing_rows') or 0
+        ),
+        'duplicate_update_preview_count': len(update_rows),
+        'problem_rows': duplicate_count,
+    }
+
+
+def _build_insert_failed_rows(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    duplicate_summary: dict,
+    offset: int = 0,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    duplicate_indices = list(duplicate_summary.get('row_indices') or [])
+    if not duplicate_indices:
+        return df.iloc[0:0]
+
+    existing_indices = set(duplicate_summary.get('existing_row_indices') or [])
+    file_indices = set(duplicate_summary.get('file_row_indices') or [])
+    key_columns = list(duplicate_summary.get('key_columns') or [])
+    existing_row_indices = sorted(existing_indices)
+    file_only_indices = sorted(file_indices - existing_indices)
+    offset = max(0, int(offset or 0))
+    if limit is not None:
+        limit = max(0, int(limit))
+        existing_count = len(existing_row_indices)
+        existing_start = min(offset, existing_count)
+        existing_end = min(existing_count, offset + limit)
+        selected_existing_indices = existing_row_indices[existing_start:existing_end]
+        remaining_limit = max(0, limit - len(selected_existing_indices))
+        file_start = max(0, offset - existing_count)
+        selected_file_only_indices = file_only_indices[file_start:file_start + remaining_limit]
+    else:
+        existing_count = len(existing_row_indices)
+        selected_existing_indices = existing_row_indices[offset:]
+        file_start = max(0, offset - existing_count)
+        selected_file_only_indices = file_only_indices[file_start:]
+
+    existing_failed_df = _fetch_insert_existing_duplicate_rows(
+        db_name,
+        target_meta,
+        df,
+        key_columns,
+        selected_existing_indices,
+        duplicate_summary['staging_table_name'],
+    )
+
+    if not selected_file_only_indices:
+        return existing_failed_df.drop(columns=['__upload_row_index'], errors='ignore').reset_index(drop=True)
+
+    file_failed_df = df.loc[selected_file_only_indices].copy()
+    file_failed_df.insert(0, 'Excel行号', [int(index) + 2 for index in selected_file_only_indices])
+    file_failed_df['失败原因'] = 'Excel 内主键或唯一键重复'
+
+    if existing_failed_df.empty:
+        return file_failed_df.reset_index(drop=True)
+
+    return pd.concat(
+        [
+            existing_failed_df.drop(columns=['__upload_row_index'], errors='ignore'),
+            file_failed_df,
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+
+
+def _build_insert_duplicate_update_rows(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    duplicate_summary: dict,
+    offset: int = 0,
+    limit: int | None = None,
+) -> tuple[list[str], list[dict]]:
+    existing_indices = set(duplicate_summary.get('existing_row_indices') or [])
+    file_indices = set(duplicate_summary.get('file_row_indices') or [])
+    key_columns = list(duplicate_summary.get('key_columns') or [])
+    target_columns = list(target_meta.get('columns') or [])
+    upload_columns = list(df.columns)
+
+    records = []
+    existing_row_indices = sorted(existing_indices)
+    file_only_indices = sorted(file_indices - existing_indices)
+    offset = max(0, int(offset or 0))
+    if limit is not None:
+        limit = max(0, int(limit))
+        existing_count = len(existing_row_indices)
+        existing_start = min(offset, existing_count)
+        existing_end = min(existing_count, offset + limit)
+        selected_existing_indices = existing_row_indices[existing_start:existing_end]
+        remaining_limit = max(0, limit - len(selected_existing_indices))
+        file_start = max(0, offset - existing_count)
+        selected_file_only_indices = file_only_indices[file_start:file_start + remaining_limit]
+    else:
+        existing_count = len(existing_row_indices)
+        selected_existing_indices = existing_row_indices[offset:]
+        file_start = max(0, offset - existing_count)
+        selected_file_only_indices = file_only_indices[file_start:]
+
+    existing_rows = _fetch_insert_existing_duplicate_rows(
+        db_name,
+        target_meta,
+        df,
+        key_columns,
+        selected_existing_indices,
+        duplicate_summary['staging_table_name'],
+    )
+    for row in safe_records(existing_rows):
+        upload_index = row.get('__upload_row_index')
+        if upload_index is None:
+            continue
+        upload_index = int(upload_index)
+        record = {
+            '__upload_row_index': upload_index,
+            '可更新': True,
+            'Excel行号': upload_index + 2,
+            '失败原因': row.get('失败原因') or '目标表已存在相同主键或唯一键',
+        }
+        for column in key_columns:
+            record[f'主键:{column}'] = _json_safe_cell(df.at[upload_index, column])
+        for column in target_columns:
+            record[f'当前:{column}'] = row.get(column)
+        for column in upload_columns:
+            record[f'上传:{column}'] = _json_safe_cell(df.at[upload_index, column])
+        records.append(record)
+
+    for upload_index in selected_file_only_indices:
+        record = {
+            '__upload_row_index': int(upload_index),
+            '可更新': False,
+            'Excel行号': int(upload_index) + 2,
+            '失败原因': 'Excel 内主键或唯一键重复',
+        }
+        for column in key_columns:
+            record[f'主键:{column}'] = _json_safe_cell(df.at[upload_index, column])
+        for column in target_columns:
+            record[f'当前:{column}'] = None
+        for column in upload_columns:
+            record[f'上传:{column}'] = _json_safe_cell(df.at[upload_index, column])
+        records.append(record)
+
+    columns = (
+        ['可更新', 'Excel行号', '失败原因']
+        + [f'主键:{column}' for column in key_columns]
+        + [f'当前:{column}' for column in target_columns]
+        + [f'上传:{column}' for column in upload_columns]
+    )
+    return columns, records
+
+
+def _resolve_insert_auto_update_time_column(
+    target_meta: dict,
+    upload_columns: list[str],
+    key_columns: list[str],
+) -> str | None:
+    upload_column_set = set(upload_columns)
+    key_column_set = set(key_columns)
+    target_columns = list(target_meta.get('columns') or [])
+    for candidate_name in ('update_time', 'updated_at'):
+        for column in target_columns:
+            if column.lower() != candidate_name:
+                continue
+            if column in upload_column_set or column in key_column_set:
+                return None
+            return column
+    return None
+
+
+def _update_insert_duplicate_rows_from_staging(
+    db_name: str,
+    target_meta: dict,
+    df: pd.DataFrame,
+    duplicate_summary: dict,
+    selected_rows: list[int] | None = None,
+) -> int:
+    """用上传批次 staging 表批量更新已确认的历史重复 ID。"""
+    staging_table_name = str(
+        duplicate_summary.get('staging_table_name') or ''
+    ).strip()
+    key_columns = list(duplicate_summary.get('key_columns') or [])
+    existing_indices = set(duplicate_summary.get('existing_row_indices') or [])
+    if not staging_table_name:
+        raise ValueError('当前重复数据没有可用的 staging 会话，请重新上传 Excel')
+    if not key_columns:
+        raise ValueError('没有可更新的历史重复数据')
+
+    selected_indices = sorted(existing_indices)
+    selected_filter = 'COALESCE(s."__insert_existing_match", FALSE)'
+    selected_params = {}
+    if selected_rows is not None:
+        selected_indices = []
+        for row_index in selected_rows:
+            try:
+                normalized = int(row_index)
+            except (TypeError, ValueError):
+                continue
+            if normalized not in selected_indices:
+                selected_indices.append(normalized)
+        if not selected_indices:
+            raise ValueError('请选择需要更新的重复数据')
+        invalid_indices = [
+            index for index in selected_indices
+            if index not in existing_indices
+        ]
+        if invalid_indices:
+            raise ValueError('只能更新目标表中已存在的重复 ID，Excel 内部重复行不能直接更新')
+
+        selected_filter += ' AND s."__upload_row_index" IN :selected_indices'
+        selected_params['selected_indices'] = selected_indices
+
+    seen_keys = set()
+    for row_index in selected_indices:
+        key_values = []
+        for column in key_columns:
+            value = _json_safe_cell(df.at[row_index, column])
+            try:
+                hash(value)
+            except TypeError:
+                value = json.dumps(value, ensure_ascii=False, default=str)
+            key_values.append(value)
+        key_signature = tuple(key_values)
+        if key_signature in seen_keys:
+            raise ValueError('同一个主键或唯一键只能选择一行进行更新，请先核对 Excel 重复数据')
+        seen_keys.add(key_signature)
+
+    update_columns = [
+        column for column in df.columns
+        if column not in key_columns
+    ]
+    auto_update_time_column = _resolve_insert_auto_update_time_column(
+        target_meta,
+        list(df.columns),
+        key_columns,
+    )
+    if not update_columns and not auto_update_time_column:
+        raise ValueError('Excel 除主键或唯一键外没有可更新字段')
+
+    target_table_sql = _quote_table_name(target_meta)
+    staging_table_sql = _insert_staging_table_sql(
+        target_meta,
+        staging_table_name,
+    )
+    source_columns = ', '.join(
+        f's.{_quote_ident(column)} AS {_quote_ident(column)}'
+        for column in df.columns
+    )
+    partition_columns = ', '.join(
+        f's.{_quote_ident(column)}'
+        for column in key_columns
+    )
+    set_items = [
+        f'{_quote_ident(column)} = u.{_quote_ident(column)}'
+        for column in update_columns
+    ]
+    if auto_update_time_column:
+        set_items.append(
+            f'{_quote_ident(auto_update_time_column)} = CURRENT_TIMESTAMP'
+        )
+    join_condition = _insert_join_condition('t', 'u', key_columns)
+    query = text(f"""
+        WITH ranked_upload AS (
+            SELECT
+                {source_columns},
+                ROW_NUMBER() OVER (
+                    PARTITION BY {partition_columns}
+                    ORDER BY s."__upload_row_index"
+                ) AS "__insert_rank"
+            FROM {staging_table_sql} AS s
+            WHERE {selected_filter}
+        )
+        UPDATE {target_table_sql} AS t
+        SET {', '.join(set_items)}
+        FROM ranked_upload AS u
+        WHERE u."__insert_rank" = 1
+          AND {join_condition}
+    """)
+    if selected_rows is not None:
+        query = query.bindparams(
+            bindparam('selected_indices', expanding=True)
+        )
+
+    engine = DatabasePoolManager.get_engine(db_name)
+    with engine.begin() as conn:
+        marked_count = conn.execute(text(f"""
+            SELECT COUNT(*)
+            FROM {staging_table_sql}
+            WHERE COALESCE("__insert_existing_match", FALSE)
+        """)).scalar()
+        if not marked_count:
+            raise ValueError('上传批次没有完成历史重复标记')
+        result = conn.execute(query, selected_params)
+        rowcount = result.rowcount
+    if rowcount and rowcount > 0:
+        return int(rowcount)
+    # Some PostgreSQL-compatible drivers report -1 for UPDATE rowcount.
+    return len(selected_indices)
+
+
+def _remove_insert_duplicate_indices(duplicate_summary: dict, selected_rows: list[int]):
+    selected_indices = set()
+    for row_index in selected_rows:
+        try:
+            selected_indices.add(int(row_index))
+        except (TypeError, ValueError):
+            continue
+    if not selected_indices:
+        return
+
+    for key in ('existing_row_indices', 'file_row_indices', 'row_indices'):
+        duplicate_summary[key] = [
+            int(index) for index in duplicate_summary.get(key, [])
+            if int(index) not in selected_indices
+        ]
+    duplicate_summary['existing_rows'] = len(duplicate_summary.get('existing_row_indices') or [])
+    duplicate_summary['file_rows'] = len(duplicate_summary.get('file_row_indices') or [])
+    duplicate_summary['total_rows'] = len(duplicate_summary.get('row_indices') or [])
 
 
 def _guess_match_field(columns: list[str], keyword_column: str, hint_text: str = '') -> str | None:
@@ -1610,6 +2636,69 @@ def get_db_schemas():
         return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
+@main_bp.route('/api/insert_target_tables', methods=['GET'])
+def insert_target_tables():
+    """查询可用于插入的 tmp schema 表。"""
+    db_name = request.args.get('db_name', '').strip()
+    keyword = request.args.get('keyword', '').strip().lower()
+    try:
+        limit = int(request.args.get('limit', 50) or 50)
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    if not db_name:
+        return jsonify({'error': 'missing db_name', 'status': 'error'}), 400
+
+    try:
+        keyword_like = f'%{keyword}%'
+        query = text("""
+            SELECT table_schema, table_name, table_type
+            FROM information_schema.tables
+            WHERE table_schema = 'tmp'
+              AND lower(table_name) NOT LIKE '%\\_middle%' ESCAPE '\\'
+              AND lower(table_name) NOT LIKE '\\_\\_insert\\_stage\\_%' ESCAPE '\\'
+              AND (
+                  :keyword = ''
+                  OR lower(table_name) LIKE :keyword_like
+                  OR lower(table_schema || '.' || table_name) LIKE :keyword_like
+              )
+            ORDER BY table_name
+            LIMIT :limit
+        """)
+        engine = DatabasePoolManager.get_engine(db_name)
+        with engine.connect() as conn:
+            rows = conn.execute(
+                query,
+                {
+                    'keyword': keyword,
+                    'keyword_like': keyword_like,
+                    'limit': limit,
+                },
+            ).fetchall()
+        tables = []
+        for row in rows:
+            mapping = row._mapping
+            table_name = str(mapping.get('table_name') or '').strip()
+            if not table_name:
+                continue
+            tables.append({
+                'schema': 'tmp',
+                'table_name': table_name,
+                'table_type': str(mapping.get('table_type') or '').strip(),
+                'columns': [],
+                'column_count': 0,
+                'columns_loaded': False,
+            })
+        return jsonify({
+            'status': 'success',
+            'schema': 'tmp',
+            'keyword': keyword,
+            'tables': tables,
+        })
+    except Exception as e:
+        return jsonify({'error': _format_match_error(e), 'status': 'error'}), 500
+
+
 @main_bp.route('/api/knowledge/status', methods=['GET'])
 def knowledge_status():
     """获取知识库状态"""
@@ -2109,6 +3198,216 @@ def upload_excel_preview():
         })
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
+
+
+@main_bp.route('/api/insert_excel', methods=['POST'])
+def insert_excel():
+    """将 Excel 数据追加插入已有数据库表。"""
+    db_name = request.form.get('db_name', '').strip()
+    table_name = request.form.get('table_name', '').strip()
+    file = request.files.get('file')
+    if not db_name:
+        return jsonify({'error': '请选择数据库', 'status': 'error'}), 400
+
+    staging_table_name = ''
+    insert_session_id = ''
+    try:
+        target_meta, df, column_mappings = _prepare_insert_excel_data(
+            db_name,
+            table_name,
+            file,
+        )
+        full_table_name = _format_full_table_name(target_meta)
+        staging_table_name = _create_insert_staging_table(db_name, target_meta, df)
+        duplicate_summary = _analyze_insert_duplicates(
+            db_name,
+            target_meta,
+            df,
+            staging_table_name=staging_table_name,
+        )
+        duplicate_rows = duplicate_summary['total_rows']
+        if duplicate_rows:
+            insert_session_id = _store_insert_excel_session(
+                db_name,
+                target_meta,
+                df,
+                column_mappings,
+                duplicate_summary,
+                staging_table_name,
+            )
+        page, page_size = _parse_insert_duplicate_page_options(request.form)
+        duplicate_payload = _build_insert_duplicate_response_payload(
+            db_name,
+            target_meta,
+            df,
+            column_mappings,
+            duplicate_summary,
+            page,
+            page_size,
+            mode='insert',
+            insert_session_id=insert_session_id,
+        )
+        insertable_count = len(df) - duplicate_rows
+        if insertable_count == 0:
+            message = (
+                f'发现 {duplicate_rows} 行重复 ID，本次没有新增行；'
+                f'历史表重复 {duplicate_summary["existing_rows"]} 行，'
+                f'Excel 内重复 {duplicate_summary["file_rows"]} 行。'
+                '请在下方核对重复数据，勾选后确认更新'
+            )
+            if duplicate_rows > INSERT_RESPONSE_ROW_LIMIT:
+                message += '；重复数据可分页查看'
+            return jsonify({
+                'status': 'success',
+                **duplicate_payload,
+                'table_name': full_table_name,
+                'inserted_rows': 0,
+                'message': message,
+            })
+
+        _insert_non_duplicate_rows_from_staging(
+            db_name,
+            target_meta,
+            df,
+            staging_table_name,
+        )
+
+        inserted_rows = insertable_count
+        failed_hint = (
+            '可下载目标表已有数据'
+            if duplicate_summary['existing_rows']
+            else '可下载重复数据明细'
+        )
+        message = (
+            f'✅ 成功向 {full_table_name} 插入 {inserted_rows} 行，'
+            f'{duplicate_rows} 行重复 ID 未插入，{failed_hint}'
+            if duplicate_rows
+            else f'✅ 成功向 {full_table_name} 插入 {inserted_rows} 行数据'
+        )
+        if duplicate_rows > INSERT_RESPONSE_ROW_LIMIT:
+            message += '；重复数据可分页查看'
+        return jsonify({
+            'status': 'success',
+            **duplicate_payload,
+            'table_name': full_table_name,
+            'inserted_rows': inserted_rows,
+            'message': message,
+        })
+    except Exception as e:
+        return jsonify({'error': _format_match_error(e), 'status': 'error'}), 400
+    finally:
+        if staging_table_name and not insert_session_id:
+            _drop_insert_staging_table(
+                db_name,
+                target_meta if 'target_meta' in locals() else {},
+                staging_table_name,
+            )
+
+
+@main_bp.route('/api/insert_excel_duplicates_page', methods=['POST'])
+def insert_excel_duplicates_page():
+    """按页返回插入流程中的重复数据核对明细。"""
+    db_name = request.form.get('db_name', '').strip()
+    table_name = request.form.get('table_name', '').strip()
+    session_id = request.form.get('insert_session_id', '').strip()
+    if not db_name:
+        return jsonify({'error': '请选择数据库', 'status': 'error'}), 400
+
+    try:
+        page, page_size = _parse_insert_duplicate_page_options(request.form)
+        session_item = _get_insert_excel_session(session_id, db_name, table_name)
+        if not session_item:
+            raise ValueError('重复数据会话不存在，请重新上传 Excel 后再查看')
+        target_meta = session_item['target_meta']
+        df = session_item['df'].copy()
+        column_mappings = list(session_item.get('column_mappings') or [])
+        duplicate_summary = session_item['duplicate_summary']
+
+        duplicate_payload = _build_insert_duplicate_response_payload(
+            db_name,
+            target_meta,
+            df,
+            column_mappings,
+            duplicate_summary,
+            page,
+            page_size,
+            mode='duplicates_page',
+            insert_session_id=session_id,
+        )
+        return jsonify({
+            'status': 'success',
+            **duplicate_payload,
+        })
+    except Exception as e:
+        return jsonify({'error': _format_match_error(e), 'status': 'error'}), 400
+
+
+@main_bp.route('/api/insert_excel_update_duplicates', methods=['POST'])
+def insert_excel_update_duplicates():
+    """人工确认后，用 Excel 中选择的重复行更新目标表已有数据。"""
+    db_name = request.form.get('db_name', '').strip()
+    table_name = request.form.get('table_name', '').strip()
+    session_id = request.form.get('insert_session_id', '').strip()
+    selected_rows_raw = request.form.get('selected_rows', '[]')
+    select_all = str(request.form.get('select_all', '')).strip().lower() in {
+        '1',
+        'true',
+        'yes',
+        'on',
+    }
+    if not db_name:
+        return jsonify({'error': '请选择数据库', 'status': 'error'}), 400
+
+    try:
+        selected_rows = json.loads(selected_rows_raw or '[]')
+        if not isinstance(selected_rows, list):
+            raise ValueError('selected_rows must be a list')
+    except Exception:
+        return jsonify({'error': '更新行参数格式错误', 'status': 'error'}), 400
+
+    try:
+        session_item = _get_insert_excel_session(session_id, db_name, table_name)
+        if not session_item:
+            raise ValueError('重复数据会话不存在，请重新上传 Excel 后再更新')
+        target_meta = session_item['target_meta']
+        df = session_item['df'].copy()
+        duplicate_summary = session_item['duplicate_summary']
+        full_table_name = _format_full_table_name(target_meta)
+        if select_all:
+            selected_rows = list(
+                duplicate_summary.get('existing_row_indices') or []
+            )
+            updated_rows = _update_insert_duplicate_rows_from_staging(
+                db_name,
+                target_meta,
+                df,
+                duplicate_summary,
+            )
+        else:
+            updated_rows = _update_insert_duplicate_rows_from_staging(
+                db_name,
+                target_meta,
+                df,
+                duplicate_summary,
+                selected_rows,
+            )
+        _remove_insert_duplicate_indices(duplicate_summary, selected_rows)
+        if not duplicate_summary.get('total_rows'):
+            _delete_insert_excel_session(session_id)
+        return jsonify({
+            'status': 'success',
+            'mode': 'update_duplicates',
+            'table_name': full_table_name,
+            'updated_rows': updated_rows,
+            'select_all': select_all,
+            'insert_update_eligible_total': int(
+                duplicate_summary.get('existing_rows') or 0
+            ),
+            'duplicate_summary': _public_insert_duplicate_summary(duplicate_summary),
+            'message': f'✅ 已更新 {full_table_name} 中 {updated_rows} 行重复数据',
+        })
+    except Exception as e:
+        return jsonify({'error': _format_match_error(e), 'status': 'error'}), 400
 
 
 @main_bp.route('/api/upload_match_configs', methods=['GET', 'POST', 'PATCH', 'DELETE'])

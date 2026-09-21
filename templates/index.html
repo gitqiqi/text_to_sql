@@ -709,6 +709,25 @@
             .upload-config-grid {
                 grid-template-columns: minmax(0, 1fr);
             }
+
+            .insert-data-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            .insert-data-actions {
+                justify-content: stretch;
+            }
+
+            .insert-data-actions .workspace-btn {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .insert-duplicate-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
         }
 
         .multi-select-container {
@@ -1448,6 +1467,108 @@
             box-sizing: border-box;
             padding: 22px 28px;
             overflow: auto;
+        }
+
+        .insert-data-body {
+            max-width: 960px;
+        }
+
+        .insert-data-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 20px;
+            align-items: start;
+        }
+
+        .insert-data-grid .upload-field {
+            min-width: 0;
+        }
+
+        .insert-data-grid select {
+            width: 100%;
+        }
+
+        .insert-data-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 22px;
+        }
+
+        .insert-data-actions .workspace-btn {
+            min-width: 104px;
+            margin-top: 0;
+        }
+
+        .insert-duplicate-header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .insert-duplicate-title {
+            color: #1f2937;
+            font-size: 15px;
+            font-weight: 800;
+        }
+
+        .insert-duplicate-panel {
+            margin-top: 18px;
+            border-top: 1px solid #e5eaf2;
+            padding-top: 18px;
+        }
+
+        .insert-duplicate-panel.hidden {
+            display: none;
+        }
+
+        .insert-duplicate-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin: 10px 0 12px;
+        }
+
+        .insert-duplicate-pager {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            margin: 0 0 12px;
+        }
+
+        .insert-duplicate-pager.hidden {
+            display: none;
+        }
+
+        .insert-page-info {
+            color: #64748b;
+            font-size: 12px;
+            min-width: 140px;
+            text-align: center;
+        }
+
+        .insert-duplicate-table {
+            overflow: auto;
+            max-height: 420px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+        }
+
+        .insert-duplicate-table table {
+            min-width: 960px;
+            margin: 0;
+        }
+
+        .insert-duplicate-table th:first-child,
+        .insert-duplicate-table td:first-child {
+            position: sticky;
+            left: 0;
+            z-index: 1;
+            background: #fff;
+            text-align: center;
         }
 
         .match-control-panel {
@@ -3146,6 +3267,9 @@
             .match-workspace-body {
                 padding: 20px 24px;
             }
+            .insert-data-body {
+                max-width: none;
+            }
         }
 
         @media (min-width: 641px) and (max-width: 900px) {
@@ -3171,12 +3295,36 @@
             .match-workspace-body {
                 padding: 16px;
             }
+            .insert-data-grid {
+                grid-template-columns: 1fr;
+            }
             .workspace-header {
                 padding: 14px 16px;
             }
             .match-run-control {
                 width: min(100%, 500px);
             }
+        }
+
+        @media (max-width: 520px) {
+            .insert-data-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            .insert-data-actions {
+                justify-content: stretch;
+            }
+
+            .insert-data-actions .workspace-btn {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .insert-duplicate-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
         }
 
     </style>
@@ -3202,6 +3350,7 @@
                 <div class="tool-panel-body">
                     <button type="button" class="tool-view-button" id="aiSqlViewBtn">AI SQL</button>
                     <button type="button" class="tool-view-button active" id="dataMatchViewBtn">数据匹配</button>
+                    <button type="button" class="tool-view-button" id="insertDataViewBtn">插入数据</button>
                     <div class="tool-section" id="historyToolSection">
                         <div class="tool-section-header static" data-section="unifiedHistory" data-static="true">
                             <span id="historyToolTitle">📁 匹配历史</span>
@@ -3263,6 +3412,57 @@
             </div>
 
             <div class="content-main">
+                <div class="main-workspace hidden" id="insertDataWorkspace">
+                    <div class="workspace-header">
+                        <div class="workspace-title-area">
+                            <h2>插入数据</h2>
+                        </div>
+                        <div class="workspace-actions">
+                            <button type="button" class="workspace-btn secondary" id="insertDataResetBtn">重置</button>
+                        </div>
+                    </div>
+                    <div class="match-workspace-body insert-data-body">
+                        <div class="insert-data-grid">
+                            <div class="upload-field">
+                                <label class="tool-label" for="insertTargetTableInput">目标表</label>
+                                <div class="match-table-picker" id="insertTargetTablePicker">
+                                    <div class="match-table-picker-control">
+                                        <input type="text" id="insertTargetTableInput" class="tool-input" placeholder="输入 tmp 表名搜索" autocomplete="off">
+                                    </div>
+                                    <div class="match-table-picker-menu hidden" id="insertTargetTableMenu" role="listbox"></div>
+                                </div>
+                            </div>
+                            <div class="upload-field">
+                                <label class="tool-label" for="insertFileInput">Excel 文件</label>
+                                <input type="file" id="insertFileInput" accept=".xlsx,.xls">
+                                <div class="workflow-node-note" id="insertFileName">未选择文件</div>
+                                <div class="workflow-node-note">Excel 字段需为目标表同名字段子集，并包含主键或唯一键字段。</div>
+                            </div>
+                        </div>
+                        <div class="insert-data-actions">
+                            <button type="button" class="workspace-btn secondary hidden" id="insertDownloadFailedBtn">下载失败数据</button>
+                            <button type="button" class="workspace-btn" id="insertConfirmBtn">插入数据</button>
+                        </div>
+                        <div id="insertStatus" class="upload-status"></div>
+                        <div class="insert-duplicate-panel hidden" id="insertDuplicatePanel">
+                            <div class="insert-duplicate-header">
+                                <div class="insert-duplicate-title">重复数据核对</div>
+                            </div>
+                            <div class="insert-duplicate-actions">
+                                <button type="button" class="workspace-btn secondary" id="insertDuplicateSelectAllBtn">全选可更新</button>
+                                <button type="button" class="workspace-btn secondary" id="insertDuplicateClearBtn">清空选择</button>
+                                <button type="button" class="workspace-btn" id="insertDuplicateUpdateBtn">确认更新</button>
+                            </div>
+                            <div class="insert-duplicate-pager hidden" id="insertDuplicatePager">
+                                <button type="button" class="workspace-btn secondary" id="insertDuplicatePrevBtn">上一页</button>
+                                <span class="insert-page-info" id="insertDuplicatePageInfo">第 1 / 1 页</span>
+                                <button type="button" class="workspace-btn secondary" id="insertDuplicateNextBtn">下一页</button>
+                            </div>
+                            <div id="insertDuplicateTable" class="insert-duplicate-table"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="main-workspace" id="dataMatchWorkspace">
                     <div class="workspace-header">
                         <div class="workspace-title-area">
@@ -3674,6 +3874,26 @@
         let uploadHistoryTables = [];
         let uploadMatchHistoryRecords = [];
         let uploadMatchConfigs = {};
+        let insertTargetTables = [];
+        let insertSessionId = '';
+        let insertTargetSearchTimeout = null;
+        let insertTargetPickerOutsideHandler = null;
+        let insertFailedRows = [];
+        let insertFailedColumns = [];
+        let insertFailedTotal = 0;
+        let insertFailedLimited = false;
+        let insertDuplicateRows = [];
+        let insertDuplicateColumns = [];
+        let insertDuplicateTotal = 0;
+        let insertDuplicatePage = 1;
+        let insertDuplicatePageSize = 200;
+        let insertDuplicateTotalPages = 0;
+        let insertDuplicateHasPrev = false;
+        let insertDuplicateHasNext = false;
+        let insertUpdateSelection = new Set();
+        let insertUpdateAllSelected = false;
+        let insertUpdateExcluded = new Set();
+        let insertUpdateEligibleTotal = 0;
         let queryHistoryDatePicker = null;
         let matchHistoryDatePicker = null;
         let activeMainView = 'match';
@@ -5084,17 +5304,20 @@
 
         function syncHistoryPanel(view = activeMainView) {
             const isSql = view === 'sql';
+            const isInsert = view === 'insert';
             const title = document.getElementById('historyToolTitle');
             const sqlHistory = document.getElementById('sqlHistoryContent');
             const matchHistory = document.getElementById('matchHistoryContent');
             const body = document.getElementById('sectionUnifiedHistory');
             const header = document.querySelector('[data-section="unifiedHistory"]');
+            const historySection = document.getElementById('historyToolSection');
 
             if (title) {
                 title.textContent = isSql ? '📜 查询历史' : '📁 匹配历史';
             }
+            historySection?.classList.toggle('hidden', isInsert);
             sqlHistory?.classList.toggle('hidden', !isSql);
-            matchHistory?.classList.toggle('hidden', isSql);
+            matchHistory?.classList.toggle('hidden', isSql || isInsert);
             body?.classList.remove('hidden');
             header?.classList.remove('collapsed');
         }
@@ -5103,19 +5326,28 @@
             activeMainView = view;
             const isSql = view === 'sql';
             const isConfig = view === 'config';
+            const isInsert = view === 'insert';
             const dataMatchWorkspace = document.getElementById('dataMatchWorkspace');
+            const insertWorkspace = document.getElementById('insertDataWorkspace');
             const configWorkspace = document.getElementById('uploadConfigModal');
             const sqlSection = document.getElementById('sqlQuerySection');
             const resizeHandle = document.getElementById('sqlResizeHandle');
             const dataBtn = document.getElementById('dataMatchViewBtn');
             const sqlBtn = document.getElementById('aiSqlViewBtn');
+            const insertBtn = document.getElementById('insertDataViewBtn');
+            const resultPanel = document.querySelector('.bottom-result');
 
-            dataMatchWorkspace?.classList.toggle('hidden', isSql || isConfig);
+            dataMatchWorkspace?.classList.toggle('hidden', isSql || isConfig || isInsert);
+            insertWorkspace?.classList.toggle('hidden', !isInsert);
             configWorkspace?.classList.toggle('hidden', !isConfig);
             sqlSection?.classList.toggle('hidden', !isSql);
             resizeHandle?.classList.toggle('hidden', !isSql);
-            dataBtn?.classList.toggle('active', !isSql);
+            if (resultPanel) {
+                resultPanel.classList.toggle('hidden', isInsert || isConfig);
+            }
+            dataBtn?.classList.toggle('active', !isSql && !isInsert && !isConfig);
             sqlBtn?.classList.toggle('active', isSql);
+            insertBtn?.classList.toggle('active', isInsert);
             syncHistoryPanel(view);
             if (!isSql) {
                 document.getElementById('aiSqlSettingsPanel')?.classList.add('hidden');
@@ -5124,6 +5356,9 @@
             if (isSql && sqlEditor) {
                 setTimeout(() => sqlEditor.refresh(), 0);
                 loadQueryHistory();
+            }
+            if (isInsert) {
+                loadInsertTargetTables('', { openMenu: false });
             }
             refreshMatchWorkspaceSummary();
         }
@@ -5280,6 +5515,81 @@
         document.getElementById('aiSqlViewBtn').addEventListener('click', () => {
             switchMainView('sql');
         });
+
+        document.getElementById('insertDataViewBtn').addEventListener('click', () => {
+            switchMainView('insert');
+        });
+
+        const insertTargetInput = document.getElementById('insertTargetTableInput');
+        const insertTargetPicker = document.getElementById('insertTargetTablePicker');
+        const insertTargetMenu = document.getElementById('insertTargetTableMenu');
+
+        document.getElementById('insertDataResetBtn')?.addEventListener('click', () => {
+            const fileInput = document.getElementById('insertFileInput');
+            if (insertTargetInput) insertTargetInput.value = '';
+            if (fileInput) fileInput.value = '';
+            document.getElementById('insertFileName').textContent = '未选择文件';
+            insertTargetMenu?.classList.add('hidden');
+            resetInsertReview({ clearStatus: true });
+        });
+
+        insertTargetInput?.addEventListener('focus', () => {
+            loadInsertTargetTables(insertTargetInput.value, { openMenu: true });
+        });
+
+        insertTargetInput?.addEventListener('input', () => {
+            resetInsertReview({ clearStatus: true });
+            clearTimeout(insertTargetSearchTimeout);
+            insertTargetSearchTimeout = setTimeout(() => {
+                loadInsertTargetTables(insertTargetInput.value, { openMenu: true });
+            }, 250);
+        });
+
+        insertTargetInput?.addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                const firstOption = insertTargetMenu?.querySelector('.match-table-picker-option');
+                if (firstOption) {
+                    event.preventDefault();
+                    firstOption.click();
+                }
+            } else if (event.key === 'Escape') {
+                insertTargetMenu?.classList.add('hidden');
+            }
+        });
+
+        insertTargetPickerOutsideHandler = event => {
+            if (!insertTargetPicker || insertTargetPicker.contains(event.target)) return;
+            insertTargetMenu?.classList.add('hidden');
+        };
+        document.addEventListener('mousedown', insertTargetPickerOutsideHandler);
+
+        document.getElementById('insertFileInput')?.addEventListener('change', event => {
+            const file = event.currentTarget.files?.[0];
+            document.getElementById('insertFileName').textContent = file ? file.name : '未选择文件';
+            resetInsertReview({ clearStatus: true });
+        });
+
+        document.getElementById('insertDownloadFailedBtn')?.addEventListener('click', downloadInsertFailedRows);
+        document.getElementById('insertConfirmBtn')?.addEventListener('click', confirmInsertData);
+        document.getElementById('insertDuplicateSelectAllBtn')?.addEventListener('click', () => {
+            insertUpdateAllSelected = true;
+            insertUpdateExcluded = new Set();
+            insertUpdateSelection = new Set();
+            renderInsertDuplicateReview();
+        });
+        document.getElementById('insertDuplicateClearBtn')?.addEventListener('click', () => {
+            insertUpdateAllSelected = false;
+            insertUpdateExcluded = new Set();
+            insertUpdateSelection = new Set();
+            renderInsertDuplicateReview();
+        });
+        document.getElementById('insertDuplicatePrevBtn')?.addEventListener('click', () => {
+            if (insertDuplicateHasPrev) loadInsertDuplicatePage(insertDuplicatePage - 1);
+        });
+        document.getElementById('insertDuplicateNextBtn')?.addEventListener('click', () => {
+            if (insertDuplicateHasNext) loadInsertDuplicatePage(insertDuplicatePage + 1);
+        });
+        document.getElementById('insertDuplicateUpdateBtn')?.addEventListener('click', confirmInsertDuplicateUpdate);
 
         document.getElementById('aiSqlSettingsToggleBtn')?.addEventListener('click', () => {
             document.getElementById('aiSqlSettingsPanel')?.classList.toggle('hidden');
@@ -5886,12 +6196,14 @@
             selectedTableInfo?.classList.remove('show');
             if (tableSearchInput) tableSearchInput.value = '';
             clearMatchTargetTablesCache();
+            resetInsertReview({ clearStatus: true });
 
             await loadSchemas({ loadTables: false });
             await Promise.allSettled([
                 loadUploadTemplates({ loadHistory: false }),
                 loadUploadTableHistory(),
                 loadQueryHistory(),
+                loadInsertTargetTables('', { openMenu: false }),
             ]);
         }
 
@@ -5967,6 +6279,480 @@
                     refreshMatchTargetDependentControls();
                 }
                 return [];
+            }
+        }
+
+        function setInsertStatus(className = '', message = '') {
+            const status = document.getElementById('insertStatus');
+            if (!status) return;
+            status.className = `upload-status ${className}`.trim();
+            status.textContent = message || '';
+        }
+
+        function resetInsertReview({ clearStatus = false } = {}) {
+            document.getElementById('insertDownloadFailedBtn')?.classList.add('hidden');
+            document.getElementById('insertDuplicatePanel')?.classList.add('hidden');
+            const duplicateTable = document.getElementById('insertDuplicateTable');
+            if (duplicateTable) duplicateTable.innerHTML = '';
+            insertSessionId = '';
+            insertFailedRows = [];
+            insertFailedColumns = [];
+            insertFailedTotal = 0;
+            insertFailedLimited = false;
+            insertDuplicateRows = [];
+            insertDuplicateColumns = [];
+            insertDuplicateTotal = 0;
+            insertDuplicatePage = 1;
+            insertDuplicatePageSize = 200;
+            insertDuplicateTotalPages = 0;
+            insertDuplicateHasPrev = false;
+            insertDuplicateHasNext = false;
+            insertUpdateSelection = new Set();
+            insertUpdateAllSelected = false;
+            insertUpdateExcluded = new Set();
+            insertUpdateEligibleTotal = 0;
+            updateInsertDuplicatePager();
+            if (clearStatus) setInsertStatus();
+        }
+
+        function renderInsertTargetTableMenu(query = '', openMenu = true) {
+            const menu = document.getElementById('insertTargetTableMenu');
+            if (!menu) return;
+            const normalizedQuery = String(query || '').trim().toLowerCase();
+            const matches = (insertTargetTables || [])
+                .map(table => {
+                    const schema = String(table.schema || 'tmp').trim() || 'tmp';
+                    const tableName = String(table.table_name || '').trim();
+                    return {
+                        value: schema ? `${schema}.${tableName}` : tableName,
+                        tableName,
+                        lower: `${schema}.${tableName}`.toLowerCase(),
+                    };
+                })
+                .filter(item => item.tableName && (!normalizedQuery || item.lower.includes(normalizedQuery) || item.tableName.toLowerCase().includes(normalizedQuery)))
+                .slice(0, 80);
+
+            if (matches.length === 0) {
+                menu.innerHTML = '<div class="match-table-picker-empty">没有匹配的 tmp 表</div>';
+            } else {
+                menu.innerHTML = matches.map(item => `
+                    <button type="button" class="match-table-picker-option" role="option" data-table-name="${escapeAttr(item.value)}" title="${escapeAttr(item.value)}">${escapeHtml(item.value)}</button>
+                `).join('');
+            }
+            if (openMenu) menu.classList.remove('hidden');
+            menu.querySelectorAll('.match-table-picker-option').forEach(option => {
+                option.addEventListener('click', () => {
+                    const input = document.getElementById('insertTargetTableInput');
+                    if (input) input.value = option.dataset.tableName || '';
+                    menu.classList.add('hidden');
+                    resetInsertReview({ clearStatus: true });
+                });
+            });
+        }
+
+        async function loadInsertTargetTables(keyword = '', { openMenu = true } = {}) {
+            const input = document.getElementById('insertTargetTableInput');
+            const menu = document.getElementById('insertTargetTableMenu');
+            const dbName = getActiveDbName();
+            if (!input) return;
+
+            if (!dbName) {
+                insertTargetTables = [];
+                menu?.classList.add('hidden');
+                resetInsertReview();
+                return;
+            }
+
+            if (menu) {
+                if (openMenu) {
+                    menu.innerHTML = '<div class="match-table-picker-empty">正在加载 tmp 表...</div>';
+                    menu.classList.remove('hidden');
+                } else {
+                    menu.classList.add('hidden');
+                }
+            }
+            try {
+                const params = new URLSearchParams({
+                    db_name: dbName,
+                    keyword: keyword || input.value || '',
+                    limit: '200',
+                });
+                const response = await fetch(`/api/insert_target_tables?${params.toString()}`);
+                const data = await response.json();
+                if (!response.ok || !Array.isArray(data.tables)) {
+                    throw new Error(data.error || '加载目标表失败');
+                }
+                insertTargetTables = data.tables;
+                renderInsertTargetTableMenu(input.value, openMenu);
+            } catch (error) {
+                insertTargetTables = [];
+                if (menu) {
+                    menu.innerHTML = '<div class="match-table-picker-empty">加载 tmp 表失败</div>';
+                    menu.classList.toggle('hidden', !openMenu);
+                }
+                setInsertStatus('error', '❌ ' + error.message);
+            }
+        }
+
+        function applyInsertFailedData(data = {}) {
+            insertFailedRows = Array.isArray(data.failed_rows) ? data.failed_rows : [];
+            insertFailedColumns = Array.isArray(data.failed_columns) ? data.failed_columns : [];
+            insertFailedTotal = Number(data.failed_count || insertFailedRows.length || 0);
+            insertFailedLimited = Boolean(data.failed_rows_limited);
+            const downloadBtn = document.getElementById('insertDownloadFailedBtn');
+            if (downloadBtn) {
+                const multiplePages = Number(data.duplicate_total_pages || insertDuplicateTotalPages || 0) > 1;
+                downloadBtn.textContent = multiplePages ? '下载当前页失败数据' : '下载失败数据';
+                downloadBtn.classList.toggle('hidden', insertFailedRows.length === 0);
+            }
+        }
+
+        function updateInsertDuplicatePager() {
+            const pager = document.getElementById('insertDuplicatePager');
+            const pageInfo = document.getElementById('insertDuplicatePageInfo');
+            const prevBtn = document.getElementById('insertDuplicatePrevBtn');
+            const nextBtn = document.getElementById('insertDuplicateNextBtn');
+            if (!pager || !pageInfo || !prevBtn || !nextBtn) return;
+
+            const hasMultiplePages = insertDuplicateTotalPages > 1;
+            pager.classList.toggle('hidden', !hasMultiplePages);
+            pageInfo.textContent = `第 ${insertDuplicatePage} / ${Math.max(1, insertDuplicateTotalPages || 1)} 页`;
+            prevBtn.disabled = !insertDuplicateHasPrev;
+            nextBtn.disabled = !insertDuplicateHasNext;
+        }
+
+        function updateInsertDuplicateControls() {
+            const selectAllBtn = document.getElementById('insertDuplicateSelectAllBtn');
+            if (selectAllBtn) {
+                selectAllBtn.textContent = insertUpdateAllSelected
+                    ? '已全选可更新'
+                    : '全选可更新';
+            }
+            updateInsertDuplicatePager();
+        }
+
+        function renderInsertDuplicateReview(data = null) {
+            if (data) {
+                const incomingSessionId = String(data.insert_session_id || '').trim();
+                const hadSession = Boolean(insertSessionId);
+                const sessionChanged = Boolean(
+                    incomingSessionId && incomingSessionId !== insertSessionId
+                );
+                const sessionEnded = Boolean(
+                    Object.prototype.hasOwnProperty.call(data, 'insert_session_id')
+                    && !incomingSessionId
+                    && hadSession
+                );
+                if (incomingSessionId) {
+                    insertSessionId = incomingSessionId;
+                } else if (sessionEnded) {
+                    insertSessionId = '';
+                }
+                insertDuplicateRows = Array.isArray(data.duplicate_update_rows) ? data.duplicate_update_rows : [];
+                insertDuplicateColumns = Array.isArray(data.duplicate_update_columns) ? data.duplicate_update_columns : [];
+                insertDuplicateTotal = Number(data.duplicate_update_total || data.problem_rows || insertDuplicateRows.length || 0);
+                insertDuplicatePage = Number(data.duplicate_page || 1);
+                insertDuplicatePageSize = Number(data.duplicate_page_size || insertDuplicatePageSize || 200);
+                insertDuplicateTotalPages = Number(data.duplicate_total_pages || 0);
+                insertDuplicateHasPrev = Boolean(data.duplicate_has_prev);
+                insertDuplicateHasNext = Boolean(data.duplicate_has_next);
+                const duplicateSummary = data.duplicate_summary || {};
+                insertUpdateEligibleTotal = Number(
+                    data.insert_update_eligible_total
+                    ?? duplicateSummary.existing_rows
+                    ?? insertUpdateEligibleTotal
+                    ?? 0
+                );
+                if (sessionChanged || sessionEnded) {
+                    insertUpdateAllSelected = false;
+                    insertUpdateExcluded = new Set();
+                    insertUpdateSelection = new Set();
+                }
+            }
+
+            const panel = document.getElementById('insertDuplicatePanel');
+            const table = document.getElementById('insertDuplicateTable');
+            if (!panel || !table) return;
+
+            if (!insertDuplicateRows.length) {
+                panel.classList.add('hidden');
+                table.innerHTML = '';
+                updateInsertDuplicateControls();
+                return;
+            }
+
+            const displayColumns = (insertDuplicateColumns.length
+                ? insertDuplicateColumns
+                : Object.keys(insertDuplicateRows[0] || {})
+            ).filter(column => column !== '__upload_row_index');
+
+            const cellText = value => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'object') return JSON.stringify(value);
+                return String(value);
+            };
+
+            let html = '<div style="overflow-x: auto;"><table><thead><tr>';
+            html += '<th>选择</th>';
+            displayColumns.forEach(column => {
+                html += `<th>${escapeHtml(String(column))}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+            insertDuplicateRows.forEach((row, index) => {
+                const rowId = String(row.__upload_row_index);
+                const canUpdate = Boolean(row['可更新']);
+                const checked = canUpdate && (
+                    insertUpdateAllSelected
+                        ? !insertUpdateExcluded.has(rowId)
+                        : insertUpdateSelection.has(rowId)
+                ) ? ' checked' : '';
+                const disabled = canUpdate ? '' : ' disabled';
+                html += '<tr>';
+                html += `<td><input type="checkbox" class="insert-duplicate-update-checkbox" data-row-id="${escapeAttr(rowId)}"${checked}${disabled}></td>`;
+                displayColumns.forEach(column => {
+                    const text = cellText(row[column]);
+                    html += `<td title="${escapeHtml(text)}">${escapeHtml(text.slice(0, 200))}${text.length > 200 ? '...' : ''}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table></div>';
+            table.innerHTML = html;
+            table.querySelectorAll('.insert-duplicate-update-checkbox').forEach(input => {
+                input.addEventListener('change', event => {
+                    const rowId = event.currentTarget.dataset.rowId;
+                    if (!rowId) return;
+                    if (insertUpdateAllSelected) {
+                        if (event.currentTarget.checked) {
+                            insertUpdateExcluded.delete(rowId);
+                        } else {
+                            insertUpdateExcluded.add(rowId);
+                        }
+                    } else if (event.currentTarget.checked) {
+                        insertUpdateSelection.add(rowId);
+                    } else {
+                        insertUpdateSelection.delete(rowId);
+                    }
+                    updateInsertDuplicateControls();
+                });
+            });
+            panel.classList.remove('hidden');
+            updateInsertDuplicateControls();
+        }
+
+        function downloadInsertFailedRows() {
+            if (!insertFailedRows.length || !insertFailedColumns.length) return;
+            const csvEscape = value => {
+                if (value === null || value === undefined) return '';
+                const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+                return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+            };
+            const rows = [
+                insertFailedColumns.map(csvEscape).join(','),
+                ...insertFailedRows.map(row => insertFailedColumns.map(column => csvEscape(row[column])).join(',')),
+            ];
+            const blob = new Blob([`\ufeff${rows.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            const suffix = insertDuplicateTotalPages > 1 ? `page_${insertDuplicatePage}` : 'all';
+            link.download = `insert_failed_${suffix}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '_')}.csv`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
+        async function confirmInsertData() {
+            const dbName = getActiveDbName();
+            const tableName = document.getElementById('insertTargetTableInput')?.value?.trim() || '';
+            const fileInput = document.getElementById('insertFileInput');
+            const confirmBtn = document.getElementById('insertConfirmBtn');
+            const file = fileInput?.files?.[0];
+            if (!dbName || !tableName || !file) {
+                setInsertStatus('error', '请选择目标表和 Excel 文件');
+                resetInsertReview();
+                return;
+            }
+
+            confirmBtn.disabled = true;
+            setInsertStatus('loading', '⏳ 正在校验并插入数据...');
+            const formData = new FormData();
+            formData.append('db_name', dbName);
+            formData.append('table_name', tableName);
+            formData.append('file', file);
+            formData.append('duplicate_page', '1');
+            formData.append('duplicate_page_size', String(insertDuplicatePageSize));
+
+            try {
+                const response = await fetch('/api/insert_excel', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    applyInsertFailedData(data);
+                    renderInsertDuplicateReview(data);
+                    throw new Error(data.error || '插入失败');
+                }
+                applyInsertFailedData(data);
+                const failedCount = Number(data.failed_count || insertFailedRows.length || 0);
+                renderInsertDuplicateReview(data);
+                setInsertStatus(
+                    failedCount > 0 ? 'warning' : 'success',
+                    data.message || (failedCount > 0 ? '有重复数据，请在下方核对后确认更新' : '✅ 插入成功'),
+                );
+                if (failedCount === 0) {
+                    fileInput.value = '';
+                    document.getElementById('insertFileName').textContent = '未选择文件';
+                }
+                confirmBtn.disabled = false;
+            } catch (error) {
+                setInsertStatus('error', '❌ ' + error.message);
+                confirmBtn.disabled = false;
+            }
+        }
+
+        async function loadInsertDuplicatePage(page) {
+            const dbName = getActiveDbName();
+            const tableName = document.getElementById('insertTargetTableInput')?.value?.trim() || '';
+            const prevBtn = document.getElementById('insertDuplicatePrevBtn');
+            const nextBtn = document.getElementById('insertDuplicateNextBtn');
+
+            if (!dbName || !tableName) {
+                setInsertStatus('error', '请选择目标表');
+                return;
+            }
+            if (!insertSessionId) {
+                setInsertStatus('error', '重复数据会话已失效，请重新上传 Excel');
+                return;
+            }
+
+            const targetPage = Math.max(1, Number(page || 1));
+            if (prevBtn) prevBtn.disabled = true;
+            if (nextBtn) nextBtn.disabled = true;
+            setInsertStatus('loading', `⏳ 正在加载第 ${targetPage} 页重复数据...`);
+
+            const formData = new FormData();
+            formData.append('db_name', dbName);
+            formData.append('table_name', tableName);
+            formData.append('insert_session_id', insertSessionId);
+            formData.append('duplicate_page', String(targetPage));
+            formData.append('duplicate_page_size', String(insertDuplicatePageSize));
+
+            try {
+                const response = await fetch('/api/insert_excel_duplicates_page', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || '加载重复数据失败');
+                }
+                applyInsertFailedData(data);
+                renderInsertDuplicateReview(data);
+                setInsertStatus('warning', `已加载第 ${insertDuplicatePage} / ${Math.max(1, insertDuplicateTotalPages || 1)} 页重复数据`);
+            } catch (error) {
+                setInsertStatus('error', '❌ ' + error.message);
+                updateInsertDuplicatePager();
+            }
+        }
+
+        async function confirmInsertDuplicateUpdate() {
+            const dbName = getActiveDbName();
+            const tableName = document.getElementById('insertTargetTableInput')?.value?.trim() || '';
+            const updateBtn = document.getElementById('insertDuplicateUpdateBtn');
+            const selectingAll = insertUpdateAllSelected;
+            const selectedRows = selectingAll
+                ? []
+                : Array.from(insertUpdateSelection)
+                    .map(value => Number(value))
+                    .filter(Number.isInteger);
+            const selectedCount = selectingAll
+                ? Math.max(0, insertUpdateEligibleTotal - insertUpdateExcluded.size)
+                : selectedRows.length;
+
+            if (!selectedCount) {
+                setInsertStatus('error', '请先勾选需要更新的重复数据');
+                return;
+            }
+            if (!dbName || !tableName || !insertSessionId) {
+                setInsertStatus('error', '重复数据会话已失效，请重新上传 Excel');
+                return;
+            }
+
+            updateBtn.disabled = true;
+            setInsertStatus('loading', '⏳ 正在更新已勾选的重复数据...');
+            const formData = new FormData();
+            formData.append('db_name', dbName);
+            formData.append('table_name', tableName);
+            formData.append('insert_session_id', insertSessionId);
+            formData.append('selected_rows', JSON.stringify(selectedRows));
+            formData.append('select_all', selectingAll ? 'true' : 'false');
+
+            try {
+                const response = await fetch('/api/insert_excel_update_duplicates', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || '更新失败');
+                }
+                setInsertStatus('success', data.message || '✅ 更新成功');
+                const duplicateSummary = data.duplicate_summary || {};
+                const nextTotal = Number(duplicateSummary.total_rows);
+                const nextEligibleTotal = Number(
+                    data.insert_update_eligible_total
+                    ?? duplicateSummary.existing_rows
+                );
+                if (Number.isFinite(nextEligibleTotal)) {
+                    insertUpdateEligibleTotal = Math.max(0, nextEligibleTotal);
+                }
+                if (selectingAll) {
+                    insertUpdateAllSelected = false;
+                    insertUpdateExcluded = new Set();
+                    insertUpdateSelection = new Set();
+                    if (Number.isFinite(nextTotal)) {
+                        insertDuplicateTotal = nextTotal;
+                        insertDuplicateTotalPages = nextTotal > 0
+                            ? Math.ceil(nextTotal / insertDuplicatePageSize)
+                            : 0;
+                    }
+                    if (nextTotal > 0 && insertSessionId) {
+                        await loadInsertDuplicatePage(
+                            Math.min(
+                                insertDuplicatePage,
+                                Math.max(1, insertDuplicateTotalPages || 1),
+                            ),
+                        );
+                    } else {
+                        insertSessionId = '';
+                        insertDuplicateRows = [];
+                        insertDuplicateColumns = [];
+                        insertDuplicateTotal = 0;
+                        insertDuplicateTotalPages = 0;
+                        insertDuplicateHasPrev = false;
+                        insertDuplicateHasNext = false;
+                        renderInsertDuplicateReview();
+                    }
+                    return;
+                }
+                const selectedSet = new Set(insertUpdateSelection);
+                insertDuplicateRows = insertDuplicateRows.filter(row => !selectedSet.has(String(row.__upload_row_index)));
+                if (Number.isFinite(nextTotal)) {
+                    insertDuplicateTotal = nextTotal;
+                    insertDuplicateTotalPages = nextTotal > 0 ? Math.ceil(nextTotal / insertDuplicatePageSize) : 0;
+                    insertDuplicatePage = Math.min(insertDuplicatePage, Math.max(1, insertDuplicateTotalPages || 1));
+                    insertDuplicateHasPrev = insertDuplicateTotalPages > 0 && insertDuplicatePage > 1;
+                    insertDuplicateHasNext = insertDuplicateTotalPages > 0 && insertDuplicatePage < insertDuplicateTotalPages;
+                    if (nextTotal === 0) insertSessionId = '';
+                }
+                insertUpdateSelection = new Set();
+                renderInsertDuplicateReview();
+            } catch (error) {
+                setInsertStatus('error', '❌ ' + error.message);
+            } finally {
+                updateBtn.disabled = false;
             }
         }
 
