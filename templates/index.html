@@ -3516,12 +3516,16 @@
                                     <div class="field-match-row field-match-primary-row">
                                         <div class="upload-field-pair-side upload-field-pair-source">
                                             <label class="workflow-node-title" for="uploadKeywordColumn">目标表字段</label>
-                                            <input type="text" id="uploadKeywordColumn" class="tool-input upload-keyword-column-select" list="uploadSourceFieldSuggestions" placeholder="输入目标表字段搜索" autocomplete="off" disabled>
+                                            <select id="uploadKeywordColumn" class="tool-input upload-keyword-column-select" disabled>
+                                                <option value="">暂无目标表字段</option>
+                                            </select>
                                             <datalist id="uploadSourceFieldSuggestions"></datalist>
                                         </div>
                                         <div class="upload-field-pair-side upload-field-pair-target">
                                             <label class="workflow-node-title" for="uploadTemplateMatchField">模板字段</label>
-                                            <input type="text" id="uploadTemplateMatchField" class="tool-input upload-template-match-field-select" list="uploadTemplateFieldSuggestions" placeholder="输入模板字段搜索" autocomplete="off" disabled>
+                                            <select id="uploadTemplateMatchField" class="tool-input upload-template-match-field-select" disabled>
+                                                <option value="">模板暂无字段</option>
+                                            </select>
                                             <datalist id="uploadTemplateFieldSuggestions"></datalist>
                                         </div>
                                         <div class="field-match-action-cell">
@@ -4083,9 +4087,44 @@
                 .join('');
         }
 
+        function renderFieldSelectOptions(select, values = [], selectedValue = '', placeholder = '请选择字段') {
+            if (!select) return;
+            const safeValues = normalizeOptionValues(values);
+            const selected = String(selectedValue || '').trim();
+            const options = [`<option value="">${escapeHtml(placeholder)}</option>`];
+            if (selected && !safeValues.some(value => value.toLowerCase() === selected.toLowerCase())) {
+                options.push(`<option value="${escapeAttr(selected)}">${escapeHtml(selected)}</option>`);
+            }
+            safeValues.forEach(value => {
+                options.push(`<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`);
+            });
+            select.innerHTML = options.join('');
+            select.value = selected && Array.from(select.options).some(option => option.value === selected) ? selected : '';
+        }
+
+        function renderFieldSelectMarkup(values = [], selectedValue = '', placeholder = '请选择字段', disabled = false) {
+            const safeValues = normalizeOptionValues(values);
+            const selected = String(selectedValue || '').trim();
+            const renderedValues = selected && !safeValues.some(value => value.toLowerCase() === selected.toLowerCase())
+                ? [selected, ...safeValues]
+                : safeValues;
+            const options = [`<option value="">${escapeHtml(placeholder)}</option>`].concat(
+                renderedValues.map(value => (
+                    `<option value="${escapeAttr(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(value)}</option>`
+                ))
+            );
+            return `${disabled ? ' disabled' : ''}>${options.join('')}`;
+        }
+
         function bindFieldPickerInput(input, getValues, listId, onCommit = null) {
             if (!input || input.dataset.fieldPickerBound === 'true') return;
             input.dataset.fieldPickerBound = 'true';
+            if (input.tagName === 'SELECT') {
+                input.addEventListener('change', () => {
+                    if (typeof onCommit === 'function') onCommit();
+                });
+                return;
+            }
             const refreshOptions = () => {
                 const values = typeof getValues === 'function' ? getValues() : [];
                 renderFieldPickerOptions(listId, values, input.value, input.value);
@@ -6905,11 +6944,11 @@
                 <div class="extra-match-pair" data-row-index="${index}">
                     <div class="upload-field-pair-side upload-field-pair-source">
                         <span class="workflow-node-title" aria-hidden="true"></span>
-                        <input type="text" class="tool-input upload-extra-source-field" list="uploadSourceFieldSuggestions" value="${escapeAttr(pair.source_field || '')}" placeholder="输入目标表字段搜索" autocomplete="off" ${sourceDisabled ? 'disabled' : ''}>
+                        <select class="tool-input upload-extra-source-field"${renderFieldSelectMarkup(uploadSourceColumns, pair.source_field || '', sourceDisabled ? '暂无目标表字段' : '请选择目标表字段', sourceDisabled)}</select>
                     </div>
                     <div class="upload-field-pair-side upload-field-pair-target">
                         <span class="workflow-node-title" aria-hidden="true"></span>
-                        <input type="text" class="tool-input upload-extra-template-field" list="uploadTemplateFieldSuggestions" value="${escapeAttr(pair.target_field || '')}" placeholder="输入模板字段搜索" autocomplete="off" ${targetDisabled ? 'disabled' : ''}>
+                        <select class="tool-input upload-extra-template-field"${renderFieldSelectMarkup(targetColumns, pair.target_field || '', targetDisabled ? '模板暂无字段' : '请选择模板字段', targetDisabled)}</select>
                     </div>
                     <div class="field-match-action-cell">
                         <button type="button" class="extra-match-remove" title="删除字段" aria-label="删除字段">×</button>
@@ -7006,8 +7045,12 @@
             const currentValue = requestedValue || (hasPrevious ? previousValue : '');
             const nextValue = resolveUploadTemplateMatchFieldValue(currentValue, config);
 
-            matchFieldSelect.value = nextValue || '';
-            matchFieldSelect.placeholder = columns.length > 0 ? '输入模板字段搜索' : '模板暂无字段';
+            renderFieldSelectOptions(
+                matchFieldSelect,
+                columns,
+                nextValue,
+                columns.length > 0 ? '请选择模板字段' : '模板暂无字段',
+            );
             renderFieldPickerOptions('uploadTemplateFieldSuggestions', columns, '', nextValue);
             matchFieldSelect.disabled = !templateKey || columns.length === 0;
             uploadExtraMatchFieldPairs = readUploadExtraMatchFieldPairs({ keepBlank: true }).map(pair => {
@@ -7033,8 +7076,12 @@
             const requestedValue = String(selectedValue || '').trim();
             const previousValue = keywordSelect.value || '';
             const currentValue = requestedValue || (safeColumns.includes(previousValue) ? previousValue : '');
-            keywordSelect.value = currentValue || '';
-            keywordSelect.placeholder = safeColumns.length > 0 ? '输入目标表字段搜索' : '暂无目标表字段';
+            renderFieldSelectOptions(
+                keywordSelect,
+                safeColumns,
+                currentValue,
+                safeColumns.length > 0 ? '请选择目标表字段' : '暂无目标表字段',
+            );
             renderFieldPickerOptions('uploadSourceFieldSuggestions', safeColumns, '', currentValue);
             keywordSelect.disabled = safeColumns.length === 0;
             const addBtn = document.getElementById('uploadAddFieldPairBtn');
@@ -7536,9 +7583,8 @@
                 const matchedTable = item.matched_table_name || '';
                 const activeClass = matchedTable && matchedTable === activeMatchedTable ? ' active' : '';
                 const resultRows = item.result_rows == null ? '' : `结果 ${item.result_rows} 条`;
-                const matchedRows = item.matched_rows == null ? '' : `命中 ${item.matched_rows} 条`;
                 const ts = formatMatchHistoryTime(item.created_at);
-                const meta = [ts, workflowLabel, resultRows, matchedRows].filter(Boolean).join(' · ');
+                const meta = [ts, workflowLabel, resultRows].filter(Boolean).join(' · ');
                 const title = `${sourceLabel} - ${templateLabel}`;
                 return `
                     <button type="button"
@@ -7586,8 +7632,7 @@
                     if (resultSummary) {
                         const summary = `${record.source_table_label || tableName} - ${record.template_label || templateKey}`;
                         const resultRows = record.result_rows == null ? '' : `结果 ${record.result_rows} 条`;
-                        const matchedRows = record.matched_rows == null ? '' : `命中 ${record.matched_rows} 条`;
-                        const meta = [formatMatchHistoryTime(record.created_at), resultRows, matchedRows]
+                        const meta = [formatMatchHistoryTime(record.created_at), resultRows]
                             .filter(Boolean)
                             .join(' · ');
                         resultSummary.textContent = `历史匹配：${summary}${meta ? `（${meta}）` : ''}`;
@@ -8641,11 +8686,10 @@
                     const fieldMappingText = mappingText || fallbackMappingText ? `，${mappingText || fallbackMappingText}` : '';
                     const sourceRowsText = typeof data.source_row_count === 'number' ? `，主表 ${data.source_row_count} 行` : '';
                     const resultRowsText = typeof data.result_rows === 'number' ? `，结果 ${data.result_rows} 行` : '';
-                    const matchedRowsText = typeof data.matched_rows === 'number' ? `，命中 ${data.matched_rows} 行` : '';
                     const resultTotal = data.result_rows != null && Number.isFinite(Number(data.result_rows))
                         ? Number(data.result_rows)
                         : (data.source_row_count != null && Number.isFinite(Number(data.source_row_count)) ? Number(data.source_row_count) : data.preview_rows.length);
-                    resultSummary.textContent = `来源：${sourceTableLabel} · ${workflowLabel}${fieldMappingText}${sourceRowsText}${resultRowsText}${matchedRowsText}`;
+                    resultSummary.textContent = `来源：${sourceTableLabel} · ${workflowLabel}${fieldMappingText}${sourceRowsText}${resultRowsText}`;
                     resultSummary.style.display = 'block';
                     resultData.innerHTML = createTable(data.preview_rows, previewColumns, {
                         totalCount: resultTotal,

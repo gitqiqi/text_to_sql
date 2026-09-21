@@ -338,6 +338,32 @@ def _normalize_template_select_sql(sql_text: str) -> str:
     return sql
 
 
+def _is_safe_unquoted_identifier(value: str) -> bool:
+    """判断标识符是否可以按 PostgreSQL 未加引号的形式引用。"""
+    return bool(re.fullmatch(
+        r'[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*',
+        str(value or '').strip(),
+    ))
+
+
+def _template_query_column_ref(alias: str, template_sql: str) -> str:
+    """引用模板 SELECT 的输出列，兼容中文别名和大小写别名。"""
+    alias = str(alias or '').strip()
+    if not alias:
+        return ''
+
+    escaped_alias = re.escape(alias.replace('"', '""'))
+    quoted_alias_pattern = rf'(?:\bAS\s+)?"{escaped_alias}"(?=\s*(?:,|\bFROM\b|\)|$))'
+    if re.search(quoted_alias_pattern, template_sql, flags=re.IGNORECASE):
+        return _quote_ident(alias)
+
+    # 模板 SQL 中未加引号的中文别名会被 PostgreSQL 原样保留中文、
+    # 但会把其中的 ASCII 大写折叠为小写，因此这里也必须使用未加引号形式。
+    if _is_safe_unquoted_identifier(alias) and any(ord(char) > 127 for char in alias):
+        return alias
+    return _quote_ident(alias)
+
+
 def _render_template_query_field_expression(spec: dict) -> str:
     field_name = str(spec.get('business_field') or spec.get('db_field') or '').strip()
     if not field_name:
@@ -503,10 +529,10 @@ def _build_match_target_select_specs(
         })
         seen_aliases.add(alias_key)
 
-    for index, spec in enumerate(match_specs):
-        append_spec(spec, index)
     for spec in return_field_specs or []:
         append_spec(spec)
+    for index, spec in enumerate(match_specs):
+        append_spec(spec, index)
 
     return match_specs, select_specs, match_alias_keys
 
@@ -2163,19 +2189,16 @@ def _resolve_upload_match_plan(
 def _execute_match_query(
     db_name: str,
     source_table_name: str,
-    matched_table_name: str,
     keyword_column: str,
     target_table_meta: dict,
     match_field_spec: dict,
     return_field_specs: list[dict],
     match_mode: str,
     target_filter: str = '',
-    source_columns: list[str] | None = None,
     match_field_pairs: list[dict] | None = None,
     target_sql_text: str = '',
 ) -> dict:
     engine = DatabasePoolManager.get_engine(db_name)
-    matched_table_sql = _quote_ident(matched_table_name)
     match_query = _build_match_sql(
         source_table_name,
         keyword_column,
@@ -2184,34 +2207,20 @@ def _execute_match_query(
         return_field_specs,
         match_mode,
         target_filter,
-        source_columns,
         match_field_pairs,
         target_sql_text,
     )
-    result_query = _build_match_result_sql(matched_table_name)
+    result_query = match_query.strip()
+    result_count_query = f'SELECT COUNT(*) FROM ({result_query}) AS match_result'
 
     with engine.connect() as conn:
-        conn.execute(text(f'DROP TABLE IF EXISTS tmp.{matched_table_sql} CASCADE'))
-        conn.execute(text(f'CREATE TABLE tmp.{matched_table_sql} AS {match_query}'))
-        conn.commit()
-
-        result_rows = conn.execute(text(f"""
-            SELECT COUNT(*)
-            FROM tmp.{matched_table_sql}
-        """)).fetchone()[0]
-        matched_rows = conn.execute(text(f"""
-            SELECT COUNT(*)
-            FROM tmp.{matched_table_sql}
-            WHERE match_hit IS TRUE
-        """)).fetchone()[0]
-
+        result_rows = conn.execute(text(result_count_query)).fetchone()[0]
         preview_df = pd.read_sql(text(f'{result_query} LIMIT 200'), conn)
 
     return {
         'match_query': match_query,
         'result_query': result_query,
         'result_rows': int(result_rows or 0),
-        'matched_rows': int(matched_rows or 0),
         'preview_df': preview_df,
     }
 
@@ -2224,7 +2233,6 @@ def _build_match_sql(
     return_field_specs: list[dict],
     match_mode: str,
     target_filter: str = '',
-    source_columns: list[str] | None = None,
     match_field_pairs: list[dict] | None = None,
     target_sql_text: str = '',
 ) -> str:
@@ -2258,86 +2266,96 @@ def _build_match_sql(
     if not match_specs or not normalized_pairs:
         raise ValueError('匹配字段不在目标表字段或返回字段映射中')
 
-    used_aliases = {_clean_name(column) for column in (source_columns or []) if str(column or '').strip()}
-    final_alias_by_key: dict[str, str] = {}
     resolved_select_specs: list[dict] = []
     for spec in select_specs:
-        base_alias = str(spec.get('business_field') or spec.get('db_field') or '').strip()
-        if not base_alias:
+        alias = str(spec.get('business_field') or spec.get('db_field') or '').strip()
+        if not alias:
             continue
-        alias = base_alias
-        suffix = 2
-        alias_key = _clean_name(alias)
-        while alias_key in used_aliases:
-            alias = f'{base_alias}_{suffix}'
-            alias_key = _clean_name(alias)
-            suffix += 1
-        used_aliases.add(alias_key)
-        original_alias_key = str(spec.get('alias_key') or _clean_name(base_alias))
-        final_alias_by_key[original_alias_key] = alias
         resolved_select_specs.append({**spec, 'alias': alias})
 
     if not resolved_select_specs:
         raise ValueError('未能生成可用的匹配字段')
 
-    target_sql = f'({template_query_sql})' if use_template_query else _quote_table_name(target_table_meta)
     source_sql = f'tmp.{_quote_ident(source_table_name)}'
+    target_filter_sql = ''
+    if not use_template_query:
+        validated_filter = _validate_target_filter(target_filter)
+        if validated_filter:
+            validated_filter = _rewrite_target_column_qualifiers(
+                validated_filter,
+                target_columns,
+            )
+            target_filter_sql = f'WHERE {validated_filter}'
+
+    if use_template_query:
+        target_from_sql = f'({template_query_sql}) b'
+        target_column_ref = lambda alias: _template_query_column_ref(alias, template_query_sql)
+    else:
+        target_parts = []
+        for spec in resolved_select_specs:
+            alias = str(spec.get('alias') or '').strip()
+            if not alias:
+                continue
+            target_parts.append(
+                f'{spec.get("expression") or "NULL"} AS {_quote_ident(alias)}'
+            )
+        target_from_sql = (
+            f'(SELECT {", ".join(target_parts)} '
+            f'FROM {_quote_table_name(target_table_meta)} t '
+            f'{target_filter_sql}) b'
+        )
+        target_column_ref = lambda alias: _quote_ident(alias)
+
     join_parts = []
     for index, pair in enumerate(normalized_pairs):
         alias_key = match_alias_keys.get(index)
-        match_alias = final_alias_by_key.get(alias_key or '')
+        match_spec = next(
+            (
+                spec for spec in resolved_select_specs
+                if str(spec.get('alias_key') or _clean_name(spec.get('alias') or '')) == alias_key
+            ),
+            None,
+        )
+        match_alias = str(
+            (match_spec or {}).get('alias')
+            or (match_spec or {}).get('business_field')
+            or (match_spec or {}).get('db_field')
+            or '',
+        ).strip()
         if not match_alias:
             raise ValueError('匹配字段缺少有效名称')
 
         keyword_ident = _quote_ident(pair['source_field'])
-        match_ident = _quote_ident(match_alias)
-        source_norm = f"LOWER(TRIM(COALESCE(CAST(a.{keyword_ident} AS TEXT), '')))"
-        target_norm = f"LOWER(TRIM(COALESCE(CAST(b.{match_ident} AS TEXT), '')))"
-        non_empty = f"{source_norm} <> '' AND {target_norm} <> ''"
+        match_ident = target_column_ref(match_alias)
+        source_value = f'a.{keyword_ident}'
+        target_value = f'b.{match_ident}'
+        source_text = f'{source_value}::text'
+        target_text = f'{target_value}::text'
         if match_mode == 'contains':
             join_parts.append(
-                f"({non_empty} AND ({target_norm} LIKE '%' || {source_norm} || '%' "
-                f"OR {source_norm} LIKE '%' || {target_norm} || '%'))"
+                f"({target_text} LIKE '%' || {source_text} || '%' "
+                f"OR {source_text} LIKE '%' || {target_text} || '%')"
             )
         else:
-            join_parts.append(f"({non_empty} AND {target_norm} = {source_norm})")
+            join_parts.append(f'{target_text} = {source_text}')
 
     join_clause = ' AND '.join(join_parts)
+    if not join_clause:
+        raise ValueError('匹配字段缺少有效条件')
 
-    validated_filter = '' if use_template_query else _validate_target_filter(target_filter)
-    if validated_filter:
-        validated_filter = _rewrite_target_column_qualifiers(
-            validated_filter,
-            target_columns,
-        )
-        validated_filter = f'WHERE {validated_filter}'
-    else:
-        validated_filter = ''
+    outer_parts = ['a.*']
+    outer_parts.extend(
+        f'b.{target_column_ref(str(spec.get("alias") or "").strip())}'
+        for spec in resolved_select_specs
+        if str(spec.get('alias') or '').strip()
+    )
+    select_sql = ', '.join(outer_parts)
 
-    target_parts = ['TRUE AS __matched']
-    for spec in resolved_select_specs:
-        alias = str(spec.get('alias') or '').strip()
-        if not alias:
-            continue
-        target_parts.append(
-            f'{spec.get("expression") or "NULL"} AS {_quote_ident(alias)}'
-        )
-
-    outer_parts = ['a.*', 'COALESCE(b.__matched, FALSE) AS match_hit']
-    for spec in resolved_select_specs:
-        alias = str(spec.get('alias') or '').strip()
-        if alias:
-            outer_parts.append(f'b.{_quote_ident(alias)}')
-
-    return f"""
-        SELECT {', '.join(outer_parts)}
-        FROM {source_sql} a
-        LEFT JOIN (
-            SELECT {', '.join(target_parts)}
-            FROM {target_sql} t
-            {validated_filter}
-        ) b ON {join_clause}
-    """
+    return (
+        f'SELECT {select_sql} '
+        f'FROM {source_sql} a '
+        f'LEFT JOIN {target_from_sql} ON {join_clause}'
+    )
 
 
 def _build_match_result_sql(
@@ -3078,9 +3096,6 @@ def upload_match_history():
                 workflow_mode = 'template'
             if workflow_mode_filter and workflow_mode != workflow_mode_filter:
                 continue
-            matched_rows = payload.get('matched_rows')
-            if matched_rows is None:
-                matched_rows = mapping.get('result_rows')
             result_rows = payload.get('result_rows')
             if result_rows is None:
                 result_rows = mapping.get('result_rows')
@@ -3090,10 +3105,10 @@ def upload_match_history():
             matched_table_token = str(matched_table_name or '').strip()
             if matched_table_token.lower().startswith('tmp.'):
                 matched_table_token = matched_table_token.split('.', 1)[1]
-            result_sql = (
+            result_sql = payload.get('result_sql') or (
                 _build_match_result_sql(matched_table_token)
                 if matched_table_token
-                else (payload.get('result_sql') or mapping.get('generated_sql') or '')
+                else (mapping.get('generated_sql') or '')
             )
             history.append({
                 'title': mapping.get('nl_query') or f'{source_table_name} - {template_label}',
@@ -3103,7 +3118,6 @@ def upload_match_history():
                 'template_label': template_label,
                 'target_table_name': payload.get('target_table_name') or '',
                 'matched_table_name': matched_table_name,
-                'matched_rows': matched_rows,
                 'result_rows': result_rows,
                 'source_row_count': payload.get('source_row_count'),
                 'keyword_column': payload.get('keyword_column') or '',
@@ -3617,26 +3631,19 @@ def match_uploaded_table():
             except Exception:
                 source_row_count = None
 
-        matched_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        source_base_name = _extract_upload_base_name(source_table_name) or source_table_name
-        matched_table_name = _build_timestamped_table_name(source_base_name, matched_timestamp, '_matched')
         match_result = _execute_match_query(
             db_name,
             source_table_name,
-            matched_table_name,
             keyword_column,
             match_plan['target_table_meta'],
             match_plan['match_field_spec'],
             match_plan['return_field_specs'],
             match_plan['match_mode'],
             match_plan['configured_target_filter'] if use_template_mode else '',
-            source_columns,
             match_plan['match_field_pairs'],
             match_plan.get('target_sql_text', '') if use_template_mode else '',
         )
         total_duration_ms = (time.time() - start_time) * 1000
-        matched_table_full_name = f'tmp.{matched_table_name}'
-        matched_rows = int(match_result['matched_rows'] or 0)
         source_rows = int(source_row_count or 0) if source_row_count is not None else None
         result_sql = match_result['result_query']
         history_template_label = template_label or template_key or ('AI 智能匹配' if ai_mode else '未选择业务模板')
@@ -3646,8 +3653,7 @@ def match_uploaded_table():
             'template_key': template_key,
             'template_label': history_template_label,
             'target_table_name': _format_full_table_name(match_plan['target_table_meta']),
-            'matched_table_name': matched_table_full_name,
-            'matched_rows': matched_rows,
+            'matched_table_name': '',
             'result_rows': int(match_result['result_rows'] or 0),
             'source_row_count': source_rows,
             'keyword_column': keyword_column,
@@ -3692,15 +3698,14 @@ def match_uploaded_table():
             'match_field': match_plan['match_field'],
             'field_mappings': match_plan['field_mappings'],
             'target_table_name': _format_full_table_name(match_plan['target_table_meta']),
-            'matched_table_name': matched_table_full_name,
-            'matched_rows': matched_rows,
+            'matched_table_name': '',
             'result_rows': int(match_result['result_rows'] or 0),
             'source_row_count': source_rows,
             'preview_columns': list(match_result['preview_df'].columns),
             'preview_rows': safe_records(match_result['preview_df']),
             'generated_sql': match_result['match_query'].strip(),
             'result_sql': result_sql,
-            'message': f'✅ 已对 {source_table_name} 完成匹配，命中 {matched_rows} 行结果'
+            'message': f'✅ 已对 {source_table_name} 完成匹配，结果 {int(match_result["result_rows"] or 0)} 行'
         })
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
@@ -4009,18 +4014,15 @@ def upload_excel():
                 match_config=upload_match_config,
             )
 
-            matched_table_name = _build_timestamped_table_name(effective_table_name, upload_timestamp, '_matched')
             match_result = _execute_match_query(
                 db_name,
                 safe_name,
-                matched_table_name,
                 keyword_column,
                 match_plan['target_table_meta'],
                 match_plan['match_field_spec'],
                 match_plan['return_field_specs'],
                 match_plan['match_mode'],
                 match_plan['configured_target_filter'] if use_template_mode else '',
-                list(df.columns),
                 match_plan['match_field_pairs'],
                 match_plan.get('target_sql_text', '') if use_template_mode else '',
             )
@@ -4034,7 +4036,6 @@ def upload_excel():
                 'match_field': match_plan['match_field'],
                 'field_mappings': match_plan['field_mappings'],
                 'target_table_name': _format_full_table_name(match_plan['target_table_meta']),
-                'matched_rows': int(match_result['matched_rows'] or 0),
                 'result_rows': int(match_result['result_rows'] or 0),
                 'preview_columns': list(match_result['preview_df'].columns),
                 'preview_rows': safe_records(match_result['preview_df']),
@@ -4042,7 +4043,7 @@ def upload_excel():
                 'result_sql': match_result['result_query'],
                 'message': (
                     f'✅ 成功导入 {row_count} 行数据到 {full_name}，'
-                    f'并匹配到 {int(match_result["matched_rows"] or 0)} 行结果'
+                    f'并生成 {int(match_result["result_rows"] or 0)} 行结果'
                 )
             })
             return jsonify(response_payload)
